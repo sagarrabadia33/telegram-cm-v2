@@ -1,0 +1,42 @@
+# Node modules (Railway will run npm install)
+node_modules/
+frontend/node_modules/
+
+# Next.js build output (Railway will rebuild)
+.next/
+frontend/.next/
+
+# Python cache
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# SQLite database files (using PostgreSQL in production)
+*.db
+*.sqlite
+*.sqlite3
+
+# Session files (production uses database sessions)
+config/*.session
+config/*.session-journal
+config/*.session-wal
+config/*.session-shm
+
+# Local environment files
+.env.local
+.env.development.local
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test files
+coverage/
+.nyc_output/

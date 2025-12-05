@@ -6,7 +6,7 @@ nixPkgs = ["nodejs-18_x", "python3", "python3Packages.pip"]
 
 [phases.install]
 cmds = [
-  "pip install -r scripts/telegram-sync-python/requirements.txt",
+  "python3 -m venv /app/.venv && /app/.venv/bin/pip install -r scripts/telegram-sync-python/requirements.txt",
   "cd frontend && npm install"
 ]
 
