@@ -1,0 +1,633 @@
+#!/usr/bin/env python3
+"""
+============================================
+TELEGRAM FULL HISTORY SYNC (Python/Telethon)
+============================================
+
+One-time script to sync complete Telegram history to PostgreSQL using Telethon.
+
+Features:
+- Fetches ALL contacts (users & groups)
+- Fetches ALL conversations
+- Fetches ALL messages with full history
+- Downloads media files (photos, videos, documents)
+- Progress tracking with resume capability
+- Rate limiting to avoid Telegram bans
+- Batch processing for optimal performance
+- Error handling with detailed logging
+
+Usage:
+    python3 full_history_sync.py
+
+Environment:
+    Requires .env.local with TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER, DATABASE_URL
+"""
+
+import os
+import sys
+import json
+import asyncio
+import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
+import psycopg2
+from psycopg2.extras import Json
+from telethon import TelegramClient
+from telethon.tl.types import (
+    User, Chat, Channel, Message,
+    MessageMediaPhoto, MessageMediaDocument,
+    MessageMediaContact, MessageMediaGeo, MessageMediaVenue,
+    PeerUser, PeerChat, PeerChannel,
+    Document
+)
+from dotenv import load_dotenv
+
+# Load environment
+env_path = Path(__file__).parent.parent.parent / '.env.local'
+load_dotenv(env_path)
+
+# Constants
+MEDIA_DIR = Path(__file__).parent.parent.parent / 'public' / 'media' / 'telegram'
+PROGRESS_FILE = Path(__file__).parent / 'sync-progress.json'
+SKIPPED_CHATS = ['Ganeesham2 Residents']  # Chats to skip
+BATCH_SIZE = 50  # Messages per batch
+RATE_LIMIT_DELAY = 1  # 1 second between API calls
+MESSAGE_FETCH_LIMIT = 100  # Messages per API call
+
+# Database connection
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+# Clean DATABASE_URL for psycopg2 (remove Prisma-specific schema parameter)
+if DATABASE_URL and '?schema=' in DATABASE_URL:
+    # Remove schema parameter as psycopg2 doesn't support it
+    DATABASE_URL = DATABASE_URL.split('?schema=')[0]
+
+# Telegram credentials
+API_ID = int(os.getenv('TELEGRAM_API_ID'))
+API_HASH = os.getenv('TELEGRAM_API_HASH')
+PHONE = os.getenv('TELEGRAM_PHONE_NUMBER')
+
+# Progress tracker
+progress = {
+    'session_string': None,
+    'contacts_completed': False,
+    'conversations_completed': False,
+    'processed_dialogs': [],
+    'current_dialog': None,
+    'current_message_offset': None,
+    'total_contacts': 0,
+    'total_conversations': 0,
+    'total_messages': 0,
+    'total_media': 0,
+    'errors': [],
+    'started_at': datetime.now(timezone.utc).isoformat(),
+    'last_updated_at': datetime.now(timezone.utc).isoformat()
+}
+
+
+def load_progress() -> Dict[str, Any]:
+    """Load progress from file."""
+    try:
+        if PROGRESS_FILE.exists():
+            with open(PROGRESS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f'Failed to load progress: {e}')
+    return progress
+
+
+def save_progress():
+    """Save progress to file."""
+    try:
+        progress['last_updated_at'] = datetime.now(timezone.utc).isoformat()
+        with open(PROGRESS_FILE, 'w') as f:
+            json.dump(progress, f, indent=2)
+    except Exception as e:
+        print(f'Failed to save progress: {e}')
+
+
+def log_error(error_type: str, error: Exception):
+    """Log an error."""
+    error_entry = {
+        'type': error_type,
+        'error': str(error),
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    }
+    progress['errors'].append(error_entry)
+    print(f'[ERROR] {error_type}: {error}')
+    save_progress()
+
+
+def get_db_connection():
+    """Get PostgreSQL database connection."""
+    return psycopg2.connect(DATABASE_URL)
+
+
+def generate_file_name(message: Message, media) -> str:
+    """Generate a unique filename for media."""
+    timestamp = int(message.date.timestamp())
+    message_id = message.id
+    hash_str = hashlib.md5(f'{message_id}-{timestamp}'.encode()).hexdigest()[:8]
+
+    extension = 'bin'
+    if isinstance(media, MessageMediaPhoto):
+        extension = 'jpg'
+    elif isinstance(media, MessageMediaDocument) and isinstance(media.document, Document):
+        for attr in media.document.attributes:
+            if hasattr(attr, 'file_name'):
+                extension = attr.file_name.split('.')[-1] if '.' in attr.file_name else 'bin'
+                break
+
+    return f'{hash_str}_{message_id}.{extension}'
+
+
+def get_media_type(media) -> str:
+    """Determine media type."""
+    if isinstance(media, MessageMediaPhoto):
+        return 'photos'
+    elif isinstance(media, MessageMediaDocument) and isinstance(media.document, Document):
+        mime_type = media.document.mime_type or ''
+        if mime_type.startswith('video/'):
+            return 'videos'
+        elif mime_type.startswith('audio/'):
+            return 'audio'
+        else:
+            return 'documents'
+    return 'other'
+
+
+async def download_media(client: TelegramClient, message: Message) -> Optional[Dict[str, Any]]:
+    """Download media from message."""
+    try:
+        if not message.media:
+            return None
+
+        media = message.media
+
+        # Skip certain media types
+        if isinstance(media, (MessageMediaContact, MessageMediaGeo, MessageMediaVenue)):
+            return None
+
+        media_type = get_media_type(media)
+        file_name = generate_file_name(message, media)
+
+        # Ensure media directory exists
+        media_dir = MEDIA_DIR / media_type
+        media_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = media_dir / file_name
+
+        # Download media
+        await client.download_media(message, file=str(file_path))
+
+        file_size = file_path.stat().st_size if file_path.exists() else 0
+        relative_path = f'/media/telegram/{media_type}/{file_name}'
+
+        progress['total_media'] += 1
+
+        return {
+            'path': relative_path,
+            'type': media_type,
+            'size': file_size
+        }
+
+    except Exception as e:
+        log_error('media_download', e)
+        return None
+
+
+async def sync_contacts(client: TelegramClient, conn):
+    """Sync all contacts."""
+    if progress['contacts_completed']:
+        print('⏭️  Contacts already synced, skipping...')
+        return
+
+    print('📇 Syncing contacts...')
+
+    try:
+        cursor = conn.cursor()
+
+        # Get all contacts using GetContactsRequest
+        from telethon.tl.functions.contacts import GetContactsRequest
+        result = await client(GetContactsRequest(hash=0))
+
+        users = result.users if hasattr(result, 'users') else []
+
+        for user in users:
+            if not isinstance(user, User):
+                continue
+
+            try:
+                # Create or update contact
+                phone = user.phone or f'telegram_{user.id}'
+                display_name = user.first_name or user.username or f'User {user.id}'
+
+                metadata = Json({
+                    'telegramId': str(user.id),
+                    'username': user.username,
+                    'bot': user.bot,
+                    'verified': user.verified,
+                    'premium': getattr(user, 'premium', False)
+                })
+
+                # Upsert contact - use gen_random_uuid() for cuid-like IDs
+                cursor.execute("""
+                    INSERT INTO "Contact" (id, "firstName", "lastName", "displayName", "primaryPhone", "bio", "metadata", "createdAt", "updatedAt")
+                    VALUES (
+                        'c' || substr(md5(random()::text), 1, 24),
+                        %s, %s, %s, %s, %s, %s, NOW(), NOW()
+                    )
+                    ON CONFLICT ("primaryPhone")
+                    DO UPDATE SET
+                        "firstName" = EXCLUDED."firstName",
+                        "lastName" = EXCLUDED."lastName",
+                        "displayName" = EXCLUDED."displayName",
+                        "bio" = EXCLUDED."bio",
+                        "metadata" = EXCLUDED."metadata",
+                        "updatedAt" = NOW()
+                    RETURNING id
+                """, (
+                    user.first_name,
+                    user.last_name,
+                    display_name,
+                    phone,
+                    str(user.status) if user.status else None,
+                    metadata
+                ))
+
+                contact_id = cursor.fetchone()[0]
+
+                # Create source identity
+                external_data = Json({
+                    'firstName': user.first_name,
+                    'lastName': user.last_name,
+                    'phone': user.phone,
+                    'username': user.username,
+                    'bot': user.bot
+                })
+
+                cursor.execute("""
+                    INSERT INTO "SourceIdentity" (id, "contactId", "source", "externalId", "externalUsername", "isPrimary", "externalData", "lastSyncedAt", "createdAt", "updatedAt")
+                    VALUES (
+                        's' || substr(md5(random()::text), 1, 24),
+                        %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW()
+                    )
+                    ON CONFLICT ("source", "externalId")
+                    DO UPDATE SET
+                        "externalUsername" = EXCLUDED."externalUsername",
+                        "externalData" = EXCLUDED."externalData",
+                        "lastSyncedAt" = NOW(),
+                        "updatedAt" = NOW()
+                """, (
+                    contact_id,
+                    'telegram',
+                    str(user.id),
+                    user.username,
+                    True,
+                    external_data
+                ))
+
+                progress['total_contacts'] += 1
+
+            except Exception as e:
+                log_error(f'contact_{user.id}', e)
+                conn.rollback()
+                continue
+
+        conn.commit()
+        progress['contacts_completed'] = True
+        save_progress()
+        print(f'✅ Synced {progress["total_contacts"]} contacts')
+
+    except Exception as e:
+        log_error('contacts_fetch', e)
+        conn.rollback()
+        raise
+
+
+async def sync_messages_for_conversation(client: TelegramClient, conn, conversation_id: str, dialog, chat_title: str):
+    """Sync all messages for a conversation."""
+    print(f'  📨 Fetching messages...')
+
+    cursor = conn.cursor()
+    offset_id = progress.get('current_message_offset', 0)
+    total_fetched = 0
+
+    try:
+        async for message in client.iter_messages(dialog, limit=None, offset_id=offset_id):
+            if not isinstance(message, Message):
+                continue
+
+            try:
+                is_outgoing = message.out
+                message_date = message.date.replace(tzinfo=timezone.utc)
+
+                # Find contact if from user
+                message_contact_id = None
+                if isinstance(message.from_id, PeerUser):
+                    user_id = message.from_id.user_id
+                    cursor.execute("""
+                        SELECT "Contact".id FROM "Contact"
+                        JOIN "SourceIdentity" ON "SourceIdentity"."contactId" = "Contact".id
+                        WHERE "SourceIdentity".source = 'telegram'
+                        AND "SourceIdentity"."externalId" = %s
+                        LIMIT 1
+                    """, (str(user_id),))
+                    result = cursor.fetchone()
+                    if result:
+                        message_contact_id = result[0]
+
+                # Download media
+                attachments = None
+                if message.media:
+                    media_info = await download_media(client, message)
+                    if media_info:
+                        attachments = Json({'files': [media_info]})
+
+                # Store message
+                metadata = Json({
+                    'views': message.views,
+                    'forwards': message.forwards,
+                    'replies': message.replies.replies if message.replies else None,
+                    'editDate': message.edit_date.isoformat() if message.edit_date else None
+                })
+
+                cursor.execute("""
+                    INSERT INTO "Message" (id, "conversationId", "contactId", "source", "externalMessageId", "direction", "contentType", "body", "sentAt", "hasAttachments", "attachments", "metadata", "createdAt", "updatedAt")
+                    VALUES (
+                        'm' || substr(md5(random()::text), 1, 24),
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+                    )
+                    ON CONFLICT ("source", "externalMessageId")
+                    DO UPDATE SET
+                        "body" = EXCLUDED."body",
+                        "hasAttachments" = EXCLUDED."hasAttachments",
+                        "attachments" = EXCLUDED."attachments",
+                        "metadata" = EXCLUDED."metadata",
+                        "updatedAt" = NOW()
+                """, (
+                    conversation_id,
+                    message_contact_id,
+                    'telegram',
+                    str(message.id),
+                    'outbound' if is_outgoing else 'inbound',
+                    'media' if message.media else 'text',
+                    message.message,
+                    message_date,
+                    bool(message.media),
+                    attachments,
+                    metadata
+                ))
+
+                progress['total_messages'] += 1
+                total_fetched += 1
+
+                # Commit in batches
+                if total_fetched % BATCH_SIZE == 0:
+                    conn.commit()
+                    progress['current_message_offset'] = message.id
+                    save_progress()
+                    print(f'    ↳ Fetched {total_fetched} messages (offset: {message.id})')
+
+                # Rate limiting
+                if total_fetched % MESSAGE_FETCH_LIMIT == 0:
+                    await asyncio.sleep(RATE_LIMIT_DELAY)
+
+            except Exception as e:
+                log_error(f'message_{message.id}', e)
+                conn.rollback()
+                continue
+
+        # Final commit
+        conn.commit()
+
+        # Update conversation
+        cursor.execute("""
+            UPDATE "Conversation"
+            SET "lastSyncedAt" = NOW(), "syncStatus" = 'completed', "updatedAt" = NOW()
+            WHERE id = %s
+        """, (conversation_id,))
+        conn.commit()
+
+        progress['current_message_offset'] = None
+        print(f'  ✅ Completed: {total_fetched} messages')
+
+    except Exception as e:
+        log_error(f'messages_fetch_{dialog.id}', e)
+        conn.rollback()
+
+
+async def sync_conversations(client: TelegramClient, conn):
+    """Sync all conversations."""
+    print('💬 Fetching all conversations...')
+
+    try:
+        cursor = conn.cursor()
+
+        async for dialog in client.iter_dialogs():
+            try:
+                entity = dialog.entity
+                chat_title = dialog.title or dialog.name or 'Unknown'
+
+                # Skip specific chats
+                if chat_title in SKIPPED_CHATS:
+                    print(f'⏭️  Skipping: {chat_title}')
+                    continue
+
+                # Skip if already processed
+                if str(dialog.id) in progress['processed_dialogs']:
+                    print(f'⏭️  Already processed: {chat_title}')
+                    continue
+
+                # Determine chat type
+                chat_type = 'private'
+                chat_id = str(dialog.id)
+                username = None
+                member_count = None
+
+                if isinstance(entity, User):
+                    chat_type = 'private'
+                    username = entity.username
+                elif isinstance(entity, Chat):
+                    chat_type = 'group'
+                    member_count = getattr(entity, 'participants_count', None)
+                elif isinstance(entity, Channel):
+                    chat_type = 'channel' if entity.broadcast else 'supergroup'
+                    username = entity.username
+                    member_count = getattr(entity, 'participants_count', None)
+
+                print(f'\n📂 Processing: {chat_title} ({chat_type})')
+                progress['current_dialog'] = chat_title
+                save_progress()
+
+                # Find contact for private chats
+                contact_id = None
+                if chat_type == 'private' and isinstance(entity, User):
+                    cursor.execute("""
+                        SELECT "Contact".id FROM "Contact"
+                        JOIN "SourceIdentity" ON "SourceIdentity"."contactId" = "Contact".id
+                        WHERE "SourceIdentity".source = 'telegram'
+                        AND "SourceIdentity"."externalId" = %s
+                        LIMIT 1
+                    """, (str(entity.id),))
+                    result = cursor.fetchone()
+                    if result:
+                        contact_id = result[0]
+
+                # Create conversation
+                last_message_at = dialog.date.replace(tzinfo=timezone.utc) if dialog.date else None
+
+                cursor.execute("""
+                    INSERT INTO "Conversation" (id, "contactId", "source", "externalChatId", "type", "title", "lastMessageAt", "lastSyncedAt", "createdAt", "updatedAt")
+                    VALUES (
+                        'v' || substr(md5(random()::text), 1, 24),
+                        %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW()
+                    )
+                    ON CONFLICT ("source", "externalChatId")
+                    DO UPDATE SET
+                        "title" = EXCLUDED."title",
+                        "lastMessageAt" = EXCLUDED."lastMessageAt",
+                        "lastSyncedAt" = NOW(),
+                        "updatedAt" = NOW()
+                    RETURNING id
+                """, (
+                    contact_id,
+                    'telegram',
+                    chat_id,
+                    chat_type,
+                    chat_title,
+                    last_message_at
+                ))
+
+                conversation_id = cursor.fetchone()[0]
+
+                # Create TelegramChat entry
+                cursor.execute("""
+                    INSERT INTO "TelegramChat" (id, "conversationId", "telegramChatId", "type", "title", "username", "memberCount", "lastSyncedAt", "createdAt", "updatedAt")
+                    VALUES (
+                        't' || substr(md5(random()::text), 1, 24),
+                        %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW()
+                    )
+                    ON CONFLICT ("conversationId")
+                    DO UPDATE SET
+                        "title" = EXCLUDED."title",
+                        "username" = EXCLUDED."username",
+                        "memberCount" = EXCLUDED."memberCount",
+                        "lastSyncedAt" = NOW(),
+                        "updatedAt" = NOW()
+                """, (
+                    conversation_id,
+                    chat_id,
+                    chat_type,
+                    chat_title,
+                    username,
+                    member_count
+                ))
+
+                conn.commit()
+
+                # Sync messages for this conversation
+                await sync_messages_for_conversation(client, conn, conversation_id, dialog, chat_title)
+
+                progress['processed_dialogs'].append(chat_id)
+                progress['total_conversations'] += 1
+                save_progress()
+
+                # Rate limiting
+                await asyncio.sleep(RATE_LIMIT_DELAY)
+
+            except Exception as e:
+                log_error(f'conversation_{dialog.id}', e)
+                conn.rollback()
+                continue
+
+        progress['conversations_completed'] = True
+        progress['current_dialog'] = None
+        save_progress()
+        print(f'\n✅ Processed {progress["total_conversations"]} conversations')
+
+    except Exception as e:
+        log_error('conversations_fetch', e)
+        conn.rollback()
+        raise
+
+
+async def main():
+    """Main execution function."""
+    print('🚀 Starting Telegram Full History Sync (Python/Telethon)\n')
+    print('================================================')
+    print(f'📅 Started at: {datetime.now(timezone.utc).isoformat()}')
+    print('================================================\n')
+
+    # Ensure media directory exists
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load existing progress
+    global progress
+    progress = load_progress()
+    print('📊 Progress loaded:')
+    print(f'   Contacts: {"✅" if progress["contacts_completed"] else "⏳"}')
+    print(f'   Conversations: {"✅" if progress["conversations_completed"] else "⏳"}')
+    print(f'   Processed dialogs: {len(progress["processed_dialogs"])}')
+    print(f'   Total messages: {progress["total_messages"]}')
+    print(f'   Total media: {progress["total_media"]}\n')
+
+    # Initialize Telegram client
+    session_file = Path(__file__).parent / 'telegram_session'
+    client = TelegramClient(str(session_file), API_ID, API_HASH)
+
+    # Database connection
+    conn = None
+
+    try:
+        print('🔐 Connecting to Telegram...\n')
+        await client.start(phone=PHONE)
+        print('✅ Connected to Telegram\n')
+
+        print('🔌 Connecting to PostgreSQL...')
+        conn = get_db_connection()
+        print('✅ Connected to PostgreSQL\n')
+
+        # Execute sync steps
+        if not progress['contacts_completed']:
+            await sync_contacts(client, conn)
+
+        if not progress['conversations_completed']:
+            await sync_conversations(client, conn)
+
+        print('\n================================================')
+        print('✅ SYNC COMPLETED SUCCESSFULLY')
+        print('================================================')
+        print(f'📊 Final Stats:')
+        print(f'   Contacts: {progress["total_contacts"]}')
+        print(f'   Conversations: {progress["total_conversations"]}')
+        print(f'   Messages: {progress["total_messages"]}')
+        print(f'   Media files: {progress["total_media"]}')
+        print(f'   Errors: {len(progress["errors"])}')
+
+        started_at = datetime.fromisoformat(progress['started_at'])
+        duration_minutes = (datetime.now(timezone.utc) - started_at).total_seconds() / 60
+        print(f'   Duration: {int(duration_minutes)} minutes')
+        print('================================================\n')
+
+        if progress['errors']:
+            print('⚠️  Errors encountered:')
+            for err in progress['errors'][-10:]:
+                print(f'   {err["timestamp"]}: {err["type"]} - {err["error"]}')
+
+    except Exception as e:
+        log_error('main_execution', e)
+        print(f'\n❌ Sync failed: {e}')
+        sys.exit(1)
+
+    finally:
+        if conn:
+            conn.close()
+        await client.disconnect()
+        print('👋 Disconnected')
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

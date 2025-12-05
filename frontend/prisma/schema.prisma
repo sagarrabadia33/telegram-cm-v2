@@ -1,0 +1,576 @@
+// ============================================
+// TELEGRAM CRM V2 - PostgreSQL Schema
+// ============================================
+// Multi-source messaging CRM optimized for PostgreSQL
+// Supports: Telegram, WhatsApp, Email, LinkedIn, etc.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// CORE ENTITIES
+// ============================================
+
+model Contact {
+  id              String   @id @default(cuid())
+
+  // Basic info
+  firstName       String?
+  lastName        String?
+  displayName     String?
+  primaryEmail    String?  @unique
+  primaryPhone    String?  @unique
+  avatarUrl       String?
+  bio             String?
+
+  // CRM fields
+  dealValue       Int?
+  dealStage       String?
+  isVip           Boolean  @default(false)
+  lastContactedAt DateTime?
+
+  // Online status (Phase 2A feature)
+  isOnline        Boolean   @default(false)
+  onlineStatus    String?
+  lastSeenAt      DateTime?
+  lastStatusCheck DateTime?
+
+  // Notes and metadata
+  notes           String?
+  metadata        Json?
+
+  // Relationships
+  sourceIdentities SourceIdentity[]
+  conversations   Conversation[]
+  messages        Message[]
+  followUps       FollowUp[]
+  tags            ContactTag[]
+  campaignMessages CampaignMessage[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([primaryEmail])
+  @@index([primaryPhone])
+  @@index([dealStage])
+  @@index([isVip])
+  @@index([lastContactedAt])
+  @@index([isOnline])
+  @@index([createdAt])
+}
+
+model Tag {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  color           String?
+  description     String?
+  category        String?
+
+  contacts        ContactTag[]
+  conversations   ConversationTag[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([category])
+}
+
+model ContactTag {
+  id              String   @id @default(cuid())
+  contactId       String
+  tagId           String
+
+  contact         Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag             Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  addedAt         DateTime @default(now())
+
+  @@unique([contactId, tagId])
+  @@index([contactId])
+  @@index([tagId])
+}
+
+model ConversationTag {
+  id              String   @id @default(cuid())
+  conversationId  String
+  tagId           String
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tag             Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  createdAt       DateTime @default(now())
+
+  @@unique([conversationId, tagId])
+  @@index([conversationId])
+  @@index([tagId])
+}
+
+// ============================================
+// SOURCE IDENTITIES (Multi-source support)
+// ============================================
+
+model SourceIdentity {
+  id                String   @id @default(cuid())
+  contactId         String
+
+  source            String
+  externalId        String
+  externalUsername  String?
+
+  isPrimary         Boolean  @default(false)
+  isActive          Boolean  @default(true)
+
+  externalData      Json?
+
+  lastSyncedAt      DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  contact           Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([source, externalId])
+  @@index([contactId])
+  @@index([source, externalId])
+  @@index([source, externalUsername])
+}
+
+// ============================================
+// CONVERSATIONS & MESSAGES
+// ============================================
+
+model Conversation {
+  id              String   @id @default(cuid())
+  contactId       String?
+
+  source          String
+  externalChatId  String
+
+  type            String
+  title           String?
+  avatarUrl       String?
+
+  // Conversation intelligence
+  summary         String?
+  summaryGeneratedAt DateTime?
+  lastTopic       String?
+  lastMessageAt   DateTime?
+  needsReply      Boolean  @default(false)
+  priorityScore   Int      @default(0)
+  sentiment       String?
+  intentLevel     String?
+  keyPoints       Json?
+  hasQuestion     Boolean  @default(false)
+
+  // Sync state
+  lastSyncedMessageId String?
+  lastSyncedAt        DateTime?
+  syncStatus          String?
+  syncError           String?
+  isSyncDisabled      Boolean   @default(false)
+
+  metadata        Json?
+
+  // Relationships
+  contact         Contact? @relation(fields: [contactId], references: [id])
+  messages        Message[]
+  followUps       FollowUp[]
+  tags            ConversationTag[]
+  members         GroupMember[]
+  telegramChat    TelegramChat?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([source, externalChatId])
+  @@index([contactId])
+  @@index([source])
+  @@index([lastMessageAt(sort: Desc)])
+  @@index([needsReply])
+  @@index([priorityScore])
+  @@index([hasQuestion])
+  @@index([syncStatus])
+  @@index([isSyncDisabled])
+}
+
+model Message {
+  id              String   @id @default(cuid())
+  conversationId  String
+  contactId       String?
+
+  source          String
+  externalMessageId String
+
+  direction       String
+  contentType     String
+  subject         String?
+  body            String?
+
+  // Status tracking
+  status          String?
+  sentAt          DateTime
+  deliveredAt     DateTime?
+  readAt          DateTime?
+
+  // AI analysis
+  containsQuestion Boolean  @default(false)
+  sentiment       String?
+  keywords        String[]
+
+  // Attachments
+  hasAttachments  Boolean  @default(false)
+  attachments     Json?
+
+  metadata        Json?
+
+  // Relationships
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact         Contact?     @relation(fields: [contactId], references: [id])
+  campaignMessage CampaignMessage?
+
+  createdAt       DateTime @default(now())
+
+  // IMPORTANT: Telegram message IDs are unique per chat, not globally
+  // So the uniqueness must include conversationId to avoid cross-conversation collisions
+  @@unique([source, conversationId, externalMessageId])
+  @@index([conversationId])
+  @@index([contactId])
+  @@index([sentAt(sort: Desc)])
+  @@index([source])
+  @@index([containsQuestion])
+  @@index([direction])
+}
+
+model GroupMember {
+  id              String   @id @default(cuid())
+  conversationId  String
+  externalUserId  String
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  username        String?
+  firstName       String?
+  lastName        String?
+  role            String?
+  joinedAt        DateTime?
+
+  createdAt       DateTime @default(now())
+
+  @@unique([conversationId, externalUserId])
+  @@index([conversationId])
+  @@index([externalUserId])
+}
+
+// ============================================
+// FOLLOW-UPS & TASKS
+// ============================================
+
+model FollowUp {
+  id              String   @id @default(cuid())
+  conversationId  String?
+  contactId       String?
+
+  conversation    Conversation? @relation(fields: [conversationId], references: [id])
+  contact         Contact?      @relation(fields: [contactId], references: [id])
+
+  title           String
+  notes           String?
+  priority        String   @default("medium")
+  status          String   @default("pending")
+  dueDate         DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([priority])
+  @@index([dueDate])
+  @@index([contactId])
+}
+
+// ============================================
+// CAMPAIGNS & WORKFLOWS
+// ============================================
+
+model Campaign {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+
+  targetingType   String
+  targetingRules  Json?
+
+  channels        String[]
+  messageTemplates Json
+
+  scheduleType    String
+  scheduledFor    DateTime?
+  timezone        String?
+
+  status          String   @default("draft")
+
+  // Stats
+  recipientCount  Int      @default(0)
+  sentCount       Int      @default(0)
+  deliveredCount  Int      @default(0)
+  readCount       Int      @default(0)
+  repliedCount    Int      @default(0)
+  failedCount     Int      @default(0)
+
+  messages        CampaignMessage[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([scheduledFor])
+}
+
+model CampaignMessage {
+  id              String   @id @default(cuid())
+  campaignId      String
+  contactId       String
+  messageId       String?  @unique
+
+  campaign        Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact         Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  message         Message? @relation(fields: [messageId], references: [id])
+
+  channel         String
+  status          String   @default("pending")
+
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+  readAt          DateTime?
+  repliedAt       DateTime?
+
+  failureReason   String?
+  retryCount      Int      @default(0)
+
+  createdAt       DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([contactId])
+  @@index([status])
+  @@index([channel])
+}
+
+model Workflow {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+
+  triggerType     String
+  triggerRules    Json
+
+  actions         Json
+
+  isActive        Boolean  @default(true)
+
+  runs            WorkflowRun[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([triggerType])
+}
+
+model WorkflowRun {
+  id              String   @id @default(cuid())
+  workflowId      String
+  contactId       String?
+
+  workflow        Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  status          String
+  triggeredBy     String?
+
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  executionLog    Json?
+
+  createdAt       DateTime @default(now())
+
+  @@index([workflowId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ============================================
+// BROADCASTING (Legacy feature)
+// ============================================
+
+model Broadcast {
+  id              String   @id @default(cuid())
+  title           String
+  message         String
+
+  tagIds          Json
+
+  status          String   @default("draft")
+  scheduledFor    DateTime?
+  sentAt          DateTime?
+
+  recipientCount  Int?
+  sentCount       Int?
+  failedCount     Int?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([scheduledFor])
+}
+
+// ============================================
+// SYNC MANAGEMENT
+// ============================================
+
+model SyncJob {
+  id              String   @id @default(cuid())
+
+  jobType         String
+  source          String
+
+  status          String   @default("pending")
+
+  conversationId  String?
+  cursor          String?
+
+  startedAt       DateTime?
+  completedAt     DateTime?
+  itemsProcessed  Int      @default(0)
+  itemsFailed     Int      @default(0)
+
+  errors          Json?
+  retryCount      Int      @default(0)
+  nextRetryAt     DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([source])
+  @@index([jobType])
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+model SyncHealth {
+  id              String   @id @default(cuid())
+
+  syncType        String
+  source          String
+
+  status          String
+
+  totalItems      Int      @default(0)
+  successCount    Int      @default(0)
+  failureCount    Int      @default(0)
+  duration        Int?
+
+  circuitBreakerState String?
+
+  errors          Json?
+
+  createdAt       DateTime @default(now())
+
+  @@index([syncType, source])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// TELEGRAM-SPECIFIC TABLES
+// ============================================
+
+model TelegramChat {
+  id              String   @id @default(cuid())
+  conversationId  String   @unique
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  telegramChatId  String   @unique
+  type            String
+  title           String?
+  username        String?
+
+  memberCount     Int?
+  isActive        Boolean  @default(true)
+
+  metadata        Json?
+
+  lastSyncedAt    DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([telegramChatId])
+  @@index([type])
+}
+
+// ============================================
+// SESSION MANAGEMENT
+// ============================================
+
+model TelegramSession {
+  id              String   @id @default(cuid())
+  sessionType     String
+
+  sessionString   String   @db.Text
+  phoneNumber     String
+  isActive        Boolean  @default(true)
+
+  lastUsedAt      DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  @@unique([sessionType])
+  @@index([isActive])
+  @@index([phoneNumber])
+}
+
+// ============================================
+// DISTRIBUTED SYNC LOCKING
+// ============================================
+
+model SyncLock {
+  id              String   @id @default(cuid())
+
+  lockType        String   // 'global', 'single', 'listener'
+  lockKey         String   // conversation_id or 'singleton' for global/listener
+
+  processId       String   // OS process ID
+  hostname        String   // Machine hostname
+
+  acquiredAt      DateTime @default(now())
+  expiresAt       DateTime // Auto-expire to handle zombie processes
+  heartbeatAt     DateTime @default(now())
+
+  metadata        Json?
+
+  @@unique([lockType, lockKey])
+  @@index([expiresAt])
+  @@index([lockType])
+}
+
+model ListenerState {
+  id                String   @id @default(cuid()) // Always 'singleton'
+
+  status            String   // 'running', 'stopped', 'error'
+  processId         String?
+  hostname          String?
+
+  startedAt         DateTime?
+  lastHeartbeat     DateTime?
+  lastMessageAt     DateTime?
+
+  messagesReceived  Int      @default(0)
+  errors            Json?
+
+  updatedAt         DateTime @updatedAt
+}

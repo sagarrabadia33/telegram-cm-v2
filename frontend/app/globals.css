@@ -1,0 +1,544 @@
+@import "tailwindcss";
+
+/* ============================================
+ * TELEGRAM CRM DESIGN SYSTEM
+ * Inspired by Linear
+ * ============================================ */
+
+:root {
+  /* ============================================
+   * COLORS - BACKGROUNDS (Dark Mode)
+   * ============================================ */
+  --bg-primary: #08090A;
+  --bg-secondary: #0F0F10;
+  --bg-tertiary: #151516;
+  --bg-hover: #1C1C1E;
+  --bg-active: #232326;
+
+  /* ============================================
+   * COLORS - BORDERS
+   * ============================================ */
+  --border-subtle: #1E1E20;
+  --border-default: #2E2E30;
+  --border-strong: #3E3E42;
+
+  /* ============================================
+   * COLORS - TEXT
+   * ============================================ */
+  --text-primary: #F7F8F8;
+  --text-secondary: #EEEFF1;
+  --text-tertiary: #95A2B3;
+  --text-quaternary: #5C6370;
+
+  /* ============================================
+   * COLORS - ACCENT / BRAND
+   * ============================================ */
+  --accent-primary: #5E6AD2;
+  --accent-hover: #4551B5;
+  --accent-active: #3D4799;
+  --accent-subtle: rgba(94, 106, 210, 0.15);
+
+  /* ============================================
+   * COLORS - STATUS
+   * ============================================ */
+  --success: #2AF598;
+  --success-subtle: rgba(42, 245, 152, 0.15);
+  --error: #D25E65;
+  --error-subtle: rgba(210, 94, 101, 0.15);
+  --warning: #F5A623;
+  --warning-subtle: rgba(245, 166, 35, 0.15);
+  --info: #08AEEA;
+  --info-subtle: rgba(8, 174, 234, 0.15);
+
+  /* ============================================
+   * COLORS - AVATAR (Telegram-style vibrant)
+   * 7 colors like Telegram uses for user avatars
+   * ============================================ */
+  --avatar-red: #E17076;
+  --avatar-orange: #FAA774;
+  --avatar-violet: #A695E7;
+  --avatar-green: #7BC862;
+  --avatar-cyan: #6EC9CB;
+  --avatar-blue: #65AADD;
+  --avatar-pink: #EE7AAE;
+
+  /* ============================================
+   * TYPOGRAPHY - FONT FAMILIES
+   * ============================================ */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+
+  /* ============================================
+   * TYPOGRAPHY - FONT WEIGHTS
+   * ============================================ */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* ============================================
+   * TYPOGRAPHY - FONT SIZES
+   * ============================================ */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --title-xs: 12px;
+  --title-sm: 14px;
+  --title-md: 16px;
+  --title-lg: 20px;
+  --title-xl: 24px;
+
+  /* ============================================
+   * TYPOGRAPHY - LINE HEIGHTS
+   * ============================================ */
+  --leading-xs: 14px;
+  --leading-sm: 16px;
+  --leading-base: 20px;
+  --leading-md: 20px;
+  --leading-lg: 22px;
+  --leading-title-md: 24px;
+
+  /* ============================================
+   * TYPOGRAPHY - LETTER SPACING
+   * ============================================ */
+  --tracking-uppercase: 0.05em;
+  --tracking-title: -0.02em;
+
+  /* ============================================
+   * SPACING (4px base grid)
+   * ============================================ */
+  --space-0: 0px;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* ============================================
+   * BORDER RADIUS
+   * ============================================ */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ============================================
+   * SHADOWS (Dark Mode)
+   * ============================================ */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  /* ============================================
+   * TRANSITIONS
+   * ============================================ */
+  --transition-fast: 100ms ease;
+  --transition-base: 150ms ease;
+  --transition-slow: 250ms ease;
+
+  /* ============================================
+   * ELEVATED SURFACES (Tooltips, Dropdowns, Modals)
+   * ============================================ */
+  --bg-elevated: #1a1a1a;
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-dropdown: 0 16px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+@theme inline {
+  /* Colors */
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-active: var(--bg-active);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-quaternary: var(--text-quaternary);
+
+  --color-accent: var(--accent-primary);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-subtle: var(--accent-subtle);
+
+  --color-success: var(--success);
+  --color-success-subtle: var(--success-subtle);
+  --color-error: var(--error);
+  --color-error-subtle: var(--error-subtle);
+  --color-warning: var(--warning);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-info: var(--info);
+  --color-info-subtle: var(--info-subtle);
+
+  /* Font Family */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+
+  /* Shadows */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ============================================
+ * LINEAR-STYLE TOOLTIP & DROPDOWN ANIMATIONS
+ * ============================================ */
+
+/* Tooltip enter animation */
+@keyframes tooltipEnter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -100%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -100%) scale(1);
+  }
+}
+
+/* Tooltip enter from bottom */
+@keyframes tooltipEnterBottom {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* Dropdown enter animation (Linear-style) */
+@keyframes dropdownEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ============================================
+ * LINEAR-STYLE TOOLTIP BASE STYLES
+ * Use .linear-tooltip class for consistent styling
+ * ============================================ */
+
+.linear-tooltip {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-1-5) var(--space-2-5);
+  box-shadow: var(--shadow-tooltip);
+  z-index: 10000;
+  pointer-events: none;
+  animation: tooltipEnter 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.linear-tooltip-text {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+  line-height: 1.4;
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+.linear-tooltip-hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: var(--space-0-5);
+}
+
+.linear-tooltip-shortcut {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-quaternary);
+  padding: var(--space-0-5) var(--space-1);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-family: system-ui, sans-serif;
+}
+
+/* ============================================
+ * LINEAR-STYLE DROPDOWN BASE STYLES
+ * Use .linear-dropdown class for consistent styling
+ * ============================================ */
+
+.linear-dropdown {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-dropdown);
+  z-index: 9999;
+  overflow: hidden;
+  animation: dropdownEnter 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.linear-dropdown-search {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.linear-dropdown-search-input {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+}
+
+.linear-dropdown-search-input input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  font-family: inherit;
+}
+
+.linear-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.linear-dropdown-item:hover,
+.linear-dropdown-item.focused {
+  background: var(--bg-hover);
+}
+
+.linear-dropdown-item.focused::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 16px;
+  background: var(--accent-primary);
+  border-radius: 1px;
+}
+
+.linear-dropdown-footer {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.linear-dropdown-kbd {
+  padding: var(--space-0-5) var(--space-1);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  font-family: system-ui, sans-serif;
+  color: var(--text-quaternary);
+}
+
+/* ============================================
+ * RESPONSIVE DESIGN SYSTEM
+ * Mobile-first breakpoints following Tailwind
+ * ============================================ */
+
+/* Utility classes for responsive visibility */
+.mobile-only {
+  display: none;
+}
+
+.desktop-only {
+  display: block;
+}
+
+.tablet-up {
+  display: block;
+}
+
+/* Mobile: 0 - 639px */
+@media (max-width: 639px) {
+  .mobile-only {
+    display: block;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .tablet-up {
+    display: none !important;
+  }
+
+  /* Mobile typography adjustments */
+  :root {
+    --text-xs: 10px;
+    --text-sm: 11px;
+    --text-base: 12px;
+    --text-md: 13px;
+    --text-lg: 14px;
+    --title-xs: 11px;
+    --title-sm: 13px;
+    --title-md: 15px;
+    --title-lg: 18px;
+    --title-xl: 22px;
+
+    /* Tighter spacing on mobile */
+    --space-4: 14px;
+    --space-5: 18px;
+    --space-6: 22px;
+    --space-8: 28px;
+  }
+
+  /* Full-height mobile viewport fix */
+  html, body {
+    height: 100%;
+    height: -webkit-fill-available;
+  }
+
+  body {
+    min-height: 100vh;
+    min-height: -webkit-fill-available;
+  }
+}
+
+/* Tablet: 640px - 1023px */
+@media (min-width: 640px) and (max-width: 1023px) {
+  .mobile-only {
+    display: none;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .tablet-up {
+    display: block;
+  }
+}
+
+/* Desktop: 1024px+ */
+@media (min-width: 1024px) {
+  .mobile-only {
+    display: none;
+  }
+
+  .desktop-only {
+    display: block;
+  }
+
+  .tablet-up {
+    display: block;
+  }
+}
+
+/* Touch-friendly tap targets on mobile */
+@media (max-width: 639px) {
+  button,
+  [role="button"],
+  a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Exception for small inline elements */
+  .inline-btn {
+    min-height: auto;
+    min-width: auto;
+  }
+}
+
+/* Mobile-optimized scrolling */
+@media (max-width: 639px) {
+  .mobile-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+}
+
+/* Safe area insets for notched devices */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}

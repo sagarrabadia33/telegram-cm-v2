@@ -1,0 +1,17 @@
+# Nixpacks configuration for Railway deployment
+# Deploys from root to include both frontend and scripts
+
+[phases.setup]
+nixPkgs = ["nodejs-18_x", "python3", "python3Packages.pip"]
+
+[phases.install]
+cmds = [
+  "pip install -r scripts/telegram-sync-python/requirements.txt",
+  "cd frontend && npm install"
+]
+
+[phases.build]
+cmds = ["cd frontend && npm run build"]
+
+[start]
+cmd = "cd frontend && npm run start:production"

@@ -1,0 +1,12 @@
+{
+  "started_at": "2025-12-01T09:20:49.462316+00:00",
+  "duration_seconds": 202.939245,
+  "dialogs_fetched": 745,
+  "conversations_with_changes": 394,
+  "conversations_synced": 1,
+  "conversations_skipped": 393,
+  "conversations_failed": 0,
+  "new_conversations_created": 0,
+  "messages_synced": 1,
+  "errors": []
+}

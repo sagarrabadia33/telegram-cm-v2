@@ -1,0 +1,18 @@
+{
+  "started_at": "2025-12-05T12:30:05.813284+00:00",
+  "status": "completed",
+  "duration_seconds": 517.07804,
+  "conversations_processed": 1,
+  "conversations_skipped": 744,
+  "conversations_failed": 0,
+  "conversations_total": 745,
+  "messages_synced": 28,
+  "messages_skipped": 0,
+  "media_downloaded": 0,
+  "media_skipped": 0,
+  "media_failed": 0,
+  "new_contacts": 0,
+  "current_conversation": null,
+  "errors": [],
+  "completed_at": "2025-12-05T12:38:42.891341+00:00"
+}
