@@ -8,7 +8,7 @@ providers = ["node"]
 nixPkgs = ["nodejs_20"]
 
 [phases.install]
-cmds = ["cd frontend && npm install"]
+cmds = ["cd frontend && npm ci --include=dev"]
 
 [phases.build]
 cmds = ["cd frontend && npm run build"]
