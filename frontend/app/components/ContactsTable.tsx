@@ -513,7 +513,7 @@ export default function ContactsTable({
 
   // Create a new tag and assign to all smart-filtered contacts
   const createSmartFilterTag = async (tagName: string) => {
-    if (!tagName.trim() || smartFilterContactIds.length === 0) return;
+    if (!tagName.trim() || !smartFilteredIds || smartFilteredIds.length === 0) return;
 
     setIsApplyingBulkTag(true);
     try {
@@ -542,7 +542,7 @@ export default function ContactsTable({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contactIds: smartFilterContactIds,
+          contactIds: smartFilteredIds,
           tagId: newTag.id,
           action: 'add',
         }),
@@ -551,7 +551,7 @@ export default function ContactsTable({
       if (bulkResponse.ok) {
         // Update local state for visible contacts
         const sorted = sortedContacts;
-        const contactsToUpdate = smartFilterContactIds.filter(id => sorted.some(c => c.id === id));
+        const contactsToUpdate = smartFilteredIds!.filter(id => sorted.some(c => c.id === id));
 
         if (contactsToUpdate.length > 0) {
           contactsToUpdate.forEach(contactId => {
