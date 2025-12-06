@@ -1,14 +1,11 @@
 # Nixpacks configuration for Railway deployment
-# Deploys from root to include both frontend and scripts
+# Next.js frontend only - Python sync scripts run locally only
 
 [phases.setup]
-nixPkgs = ["nodejs-18_x", "python3", "python3Packages.pip"]
+nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
-cmds = [
-  "python3 -m venv /app/.venv && /app/.venv/bin/pip install -r scripts/telegram-sync-python/requirements.txt",
-  "cd frontend && npm install"
-]
+cmds = ["cd frontend && npm install"]
 
 [phases.build]
 cmds = ["cd frontend && npm run build"]
