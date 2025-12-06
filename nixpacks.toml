@@ -1,6 +1,9 @@
 # Nixpacks configuration for Railway deployment
 # Next.js frontend only - Python sync scripts run locally only
 
+# Explicitly use only Node provider - disable Python auto-detection from requirements.txt
+providers = ["node"]
+
 [phases.setup]
 nixPkgs = ["nodejs_20"]
 

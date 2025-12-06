@@ -1,8 +1,8 @@
 {
   "status": "running",
-  "started_at": "2025-12-05T12:40:09.525040+00:00",
-  "messages_received": 9,
-  "last_heartbeat": "2025-12-05T13:52:19.168103+00:00",
-  "pid": 44182,
+  "started_at": "2025-12-06T05:10:07.542759+00:00",
+  "messages_received": 0,
+  "last_heartbeat": "2025-12-06T05:12:59.098266+00:00",
+  "pid": 75806,
   "errors": []
 }
