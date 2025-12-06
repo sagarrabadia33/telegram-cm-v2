@@ -687,7 +687,7 @@ export default function Home() {
           <MobileNavButton
             label="Contacts"
             icon={<ContactsIcon />}
-            active={viewMode === 'contacts'}
+            active={false}
             onClick={() => setViewMode('contacts')}
           />
         </div>
