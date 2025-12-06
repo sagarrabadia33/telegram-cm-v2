@@ -88,14 +88,17 @@ export default function Home() {
 
   // Client-side filtered conversations - instant filtering
   const filteredConversations = useMemo(() => {
+    // Safety check: ensure allConversations is an array
+    const conversations = Array.isArray(allConversations) ? allConversations : [];
+
     if (selectedTagIds.length === 0) {
-      return allConversations;
+      return conversations;
     }
 
     const hasUntaggedFilter = selectedTagIds.includes(UNTAGGED_FILTER_ID);
     const regularTagIds = selectedTagIds.filter(id => id !== UNTAGGED_FILTER_ID);
 
-    return allConversations.filter(conv => {
+    return conversations.filter(conv => {
       // Check if conversation matches "untagged" filter
       const isUntagged = !conv.tags || conv.tags.length === 0;
       if (hasUntaggedFilter && isUntagged) {
@@ -122,8 +125,11 @@ export default function Home() {
     const countMap = new Map<string, number>();
     let untaggedCount = 0;
 
+    // Safety check: ensure allConversations is an array
+    const conversations = Array.isArray(allConversations) ? allConversations : [];
+
     // Count conversations for each tag and untagged
-    allConversations.forEach(conv => {
+    conversations.forEach(conv => {
       if (!conv.tags || conv.tags.length === 0) {
         untaggedCount++;
       } else {
@@ -154,10 +160,19 @@ export default function Home() {
     try {
       const response = await fetch('/api/conversations');
       const data = await response.json();
-      setAllConversations(data);
+      // Ensure we only set an array (API might return error object on failure)
+      if (Array.isArray(data)) {
+        setAllConversations(data);
+      } else {
+        console.error('Conversations API returned non-array:', data);
+        // Keep existing data on error, or set empty array on initial load
+        if (isInitialLoad) {
+          setAllConversations([]);
+        }
+      }
 
       // Select the first conversation with messages by default (only on initial load)
-      if (isInitialLoad && data.length > 0) {
+      if (isInitialLoad && Array.isArray(data) && data.length > 0) {
         const firstWithMessages = data.find((c: Conversation) => c.totalMessages > 0);
         if (firstWithMessages) {
           setSelectedConversation(firstWithMessages);
