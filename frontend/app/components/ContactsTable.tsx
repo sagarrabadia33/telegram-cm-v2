@@ -550,7 +550,7 @@ export default function ContactsTable({
 
       if (bulkResponse.ok) {
         // Update local state for visible contacts
-        const sorted = sortedContacts;
+        const sorted = contacts;
         const contactsToUpdate = smartFilteredIds!.filter(id => sorted.some(c => c.id === id));
 
         if (contactsToUpdate.length > 0) {
