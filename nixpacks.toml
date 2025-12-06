@@ -2,7 +2,7 @@
 # Next.js frontend only - Python sync scripts run locally only
 
 [phases.setup]
-nixPkgs = ["nodejs-18_x"]
+nixPkgs = ["nodejs_20"]
 
 [phases.install]
 cmds = ["cd frontend && npm install"]
