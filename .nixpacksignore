@@ -1,3 +1,13 @@
+# Root-level backend files - NOT NEEDED IN PRODUCTION
+# (Only deploying the Next.js frontend, not the NestJS backend)
+package.json
+package-lock.json
+src/
+test/
+nest-cli.json
+tsconfig.json
+tsconfig.build.json
+
 # Ignore Python sync scripts - not needed in production
 scripts/
 requirements.txt
