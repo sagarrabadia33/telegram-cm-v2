@@ -1,0 +1,20 @@
+# Railway Configuration for Telegram Sync Worker
+# This service maintains a persistent Telegram connection for realtime sync
+
+[build]
+# Use Dockerfile for Python worker
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Health check for Railway to monitor
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+startCommand = "python main.py"
+
+# Restart policy
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# Keep running 24/7
+numReplicas = 1

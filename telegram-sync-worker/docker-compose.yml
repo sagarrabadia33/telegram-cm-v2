@@ -1,0 +1,43 @@
+# Docker Compose for Local Testing of Telegram Sync Worker
+#
+# Usage:
+# 1. Copy your session file:
+#    base64 -i ../scripts/telegram-sync-python/telegram_session.session > session.b64
+#    TELEGRAM_SESSION_BASE64=$(cat session.b64)
+#
+# 2. Create .env file with required variables (see .env.example)
+#
+# 3. Run:
+#    docker-compose up --build
+
+version: '3.8'
+
+services:
+  telegram-sync-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=${DATABASE_URL}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_SESSION_BASE64=${TELEGRAM_SESSION_BASE64}
+      - SESSION_PATH=/data/sessions/telegram_session
+    volumes:
+      # Persist session data
+      - telegram-sessions:/data/sessions
+      - telegram-logs:/data/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  telegram-sessions:
+  telegram-logs:

@@ -1,0 +1,38 @@
+# Railway Ignore for Telegram Sync Worker
+
+# Local development files
+.env
+.env.local
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local session files (use TELEGRAM_SESSION_BASE64 env var instead)
+*.session
+*.session-journal
+
+# Docker compose (local only)
+docker-compose*.yml
+
+# Testing
+tests/
+*.test.py

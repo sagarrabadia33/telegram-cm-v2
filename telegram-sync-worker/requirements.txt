@@ -1,0 +1,14 @@
+# Telegram Sync Worker Dependencies
+# Production-grade requirements for 24/7 operation
+
+# Telegram API client
+telethon==1.36.0
+
+# PostgreSQL driver (binary for faster install)
+psycopg2-binary==2.9.9
+
+# Environment variables
+python-dotenv==1.0.0
+
+# HTTP server for health checks
+aiohttp==3.9.1
