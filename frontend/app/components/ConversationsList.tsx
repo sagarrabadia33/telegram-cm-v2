@@ -1017,7 +1017,7 @@ function ConversationItem({ conversation, isSelected, onClick, onMarkAsUnread }:
         }}>
           <span style={{
             fontSize: 'var(--text-md)',
-            fontWeight: 'var(--font-medium)',
+            fontWeight: conversation.unread > 0 ? 'var(--font-semibold)' : 'var(--font-medium)',
             color: 'var(--text-primary)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -1025,13 +1025,37 @@ function ConversationItem({ conversation, isSelected, onClick, onMarkAsUnread }:
           }}>
             {conversation.name}
           </span>
-          <span style={{
-            fontSize: 'var(--text-xs)',
-            color: 'var(--text-quaternary)',
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
             flexShrink: 0,
           }}>
-            {formatRelativeTime(conversation.time)}
-          </span>
+            <span style={{
+              fontSize: 'var(--text-xs)',
+              color: conversation.unread > 0 ? '#3390ec' : 'var(--text-quaternary)',
+              fontWeight: conversation.unread > 0 ? 500 : 400,
+            }}>
+              {formatRelativeTime(conversation.time)}
+            </span>
+            {conversation.unread > 0 && (
+              <span style={{
+                minWidth: '20px',
+                height: '20px',
+                padding: '0 6px',
+                background: '#3390ec',
+                color: 'white',
+                fontSize: '12px',
+                fontWeight: 600,
+                borderRadius: '10px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+                {conversation.unread > 99 ? '99+' : conversation.unread}
+              </span>
+            )}
+          </div>
         </div>
         <p style={{
           fontSize: 'var(--text-sm)',
@@ -1091,30 +1115,6 @@ function ConversationItem({ conversation, isSelected, onClick, onMarkAsUnread }:
           </div>
         )}
 
-        {conversation.unread > 0 && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            marginTop: 'var(--space-1)'
-          }}>
-            <span style={{
-              minWidth: '20px',
-              height: '20px',
-              padding: '0 var(--space-1-5)',
-              background: 'var(--accent-primary)',
-              color: 'white',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--font-semibold)',
-              borderRadius: 'var(--radius-full)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              {conversation.unread}
-            </span>
-          </div>
-        )}
       </div>
     </div>
 
