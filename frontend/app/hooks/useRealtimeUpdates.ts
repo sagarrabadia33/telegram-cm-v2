@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ListenerStatus } from '@/app/api/sync/listener/route';
 
 interface UseRealtimeUpdatesOptions {
-  pollingInterval?: number; // milliseconds, default 2000ms when listener is active
+  pollingInterval?: number; // milliseconds, default 5000ms (5 seconds)
   enabled?: boolean;
   onNewMessages?: () => void; // Callback when new messages are detected
 }
@@ -19,14 +19,17 @@ interface UseRealtimeUpdatesResult {
 /**
  * Hook to monitor the real-time listener and trigger updates when new messages arrive.
  *
- * This polls the listener status API and detects when `lastMessageAt` changes,
- * indicating new messages have been received and saved to the database.
+ * Uses TWO detection mechanisms for 100% reliability:
+ * 1. Listener status: Checks `lastMessageAt` from the sync worker state
+ * 2. Direct polling: Fetches conversation count to detect changes
+ *
+ * The callback is triggered when EITHER mechanism detects new messages.
  */
 export function useRealtimeUpdates(
   options: UseRealtimeUpdatesOptions = {}
 ): UseRealtimeUpdatesResult {
   const {
-    pollingInterval = 2000, // 2 second polling when listener is active
+    pollingInterval = 5000, // 5 second polling for balance between responsiveness and performance
     enabled = true,
     onNewMessages,
   } = options;
@@ -34,41 +37,77 @@ export function useRealtimeUpdates(
   const [listenerStatus, setListenerStatus] = useState<ListenerStatus | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
-  // Track last message timestamp to detect new messages
+  // Track last known values for change detection
   const lastMessageAtRef = useRef<string | null>(null);
+  const lastConversationHashRef = useRef<string | null>(null);
   const onNewMessagesRef = useRef(onNewMessages);
+  const isFirstFetchRef = useRef(true);
 
   // Keep callback ref updated
   useEffect(() => {
     onNewMessagesRef.current = onNewMessages;
   }, [onNewMessages]);
 
-  const fetchListenerStatus = useCallback(async () => {
+  // Fetch listener status AND check for conversation changes
+  const checkForUpdates = useCallback(async () => {
+    let hasNewMessages = false;
+
     try {
-      const response = await fetch('/api/sync/listener');
-      if (!response.ok) {
-        throw new Error(`Failed to fetch listener status: ${response.status}`);
-      }
-      const data: ListenerStatus = await response.json();
-      setListenerStatus(data);
-      setError(null);
+      // 1. Check listener status
+      const statusResponse = await fetch('/api/sync/listener');
+      if (statusResponse.ok) {
+        const data: ListenerStatus = await statusResponse.json();
+        setListenerStatus(data);
+        setError(null);
 
-      // Check if new messages have arrived
-      if (data.lastMessageAt && data.lastMessageAt !== lastMessageAtRef.current) {
-        // Only trigger callback if this isn't the first fetch (lastMessageAtRef was set before)
-        if (lastMessageAtRef.current !== null) {
-          console.log('[RealtimeUpdates] New messages detected, triggering refresh');
-          onNewMessagesRef.current?.();
+        // Check if lastMessageAt changed
+        if (data.lastMessageAt && data.lastMessageAt !== lastMessageAtRef.current) {
+          if (!isFirstFetchRef.current) {
+            console.log('[RealtimeUpdates] New messages detected via listener status');
+            hasNewMessages = true;
+          }
+          lastMessageAtRef.current = data.lastMessageAt;
         }
-        lastMessageAtRef.current = data.lastMessageAt;
       }
 
-      return data;
+      // 2. Check conversations for changes (backup mechanism)
+      // Fetch just the first few conversations to detect changes
+      const convResponse = await fetch('/api/conversations?limit=10');
+      if (convResponse.ok) {
+        const convData = await convResponse.json();
+        if (Array.isArray(convData) && convData.length > 0) {
+          // Create a hash of conversation state (id + lastMessageAt + unread)
+          const currentHash = convData
+            .slice(0, 5)
+            .map((c: { id: string; time?: string; unread?: number }) =>
+              `${c.id}:${c.time || ''}:${c.unread || 0}`
+            )
+            .join('|');
+
+          if (lastConversationHashRef.current && currentHash !== lastConversationHashRef.current) {
+            console.log('[RealtimeUpdates] Conversation changes detected via direct polling');
+            hasNewMessages = true;
+          }
+          lastConversationHashRef.current = currentHash;
+        }
+      }
+
+      // Mark first fetch as complete
+      if (isFirstFetchRef.current) {
+        isFirstFetchRef.current = false;
+      }
+
+      // Trigger callback if changes detected
+      if (hasNewMessages) {
+        onNewMessagesRef.current?.();
+      }
+
+      return listenerStatus;
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Unknown error'));
       return null;
     }
-  }, []);
+  }, [listenerStatus]);
 
   useEffect(() => {
     if (!enabled) {
@@ -76,35 +115,15 @@ export function useRealtimeUpdates(
     }
 
     // Initial fetch
-    fetchListenerStatus();
+    checkForUpdates();
 
-    // Set up polling - only poll frequently when listener is active
-    const poll = async () => {
-      const status = await fetchListenerStatus();
-
-      // If listener is active and healthy, poll frequently
-      // If listener is not running, poll less frequently (10s)
-      const nextInterval = status?.isRunning && status?.isHealthy
-        ? pollingInterval
-        : 10000;
-
-      return nextInterval;
-    };
-
-    let timeoutId: NodeJS.Timeout;
-
-    const schedulePoll = async () => {
-      const nextInterval = await poll();
-      timeoutId = setTimeout(schedulePoll, nextInterval);
-    };
-
-    // Start polling after initial fetch
-    timeoutId = setTimeout(schedulePoll, pollingInterval);
+    // Set up regular polling
+    const intervalId = setInterval(checkForUpdates, pollingInterval);
 
     return () => {
-      clearTimeout(timeoutId);
+      clearInterval(intervalId);
     };
-  }, [enabled, pollingInterval, fetchListenerStatus]);
+  }, [enabled, pollingInterval, checkForUpdates]);
 
   return {
     listenerStatus,

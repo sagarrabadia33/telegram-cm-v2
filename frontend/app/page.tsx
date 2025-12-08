@@ -342,9 +342,10 @@ export default function Home() {
     }
   }, [fetchConversations, fetchMessages, selectedConversation]);
 
-  // Monitor real-time listener for new messages (polls every 2 seconds when listener is active)
+  // Monitor real-time listener for new messages (polls every 5 seconds)
+  // Uses dual detection: listener state changes + direct conversation polling
   const { isListenerActive } = useRealtimeUpdates({
-    pollingInterval: 2000,
+    pollingInterval: 5000,
     onNewMessages: handleNewMessages,
   });
 
