@@ -12,6 +12,7 @@ GUARANTEES:
 - No message loss (catch-up sync on startup)
 
 Author: telegram-crm-v2
+Build: v2.0-20251208 (cache bust)
 """
 
 import os
