@@ -25,6 +25,7 @@ interface ConversationsListProps {
   selectedTagIds?: string[];
   onTagFilterChange?: (tagIds: string[]) => void;
   onOpenSearch?: () => void;
+  onMarkAsUnread?: (conversationId: string) => void;
 }
 
 // Listener status for the "Live" indicator
@@ -42,6 +43,7 @@ export default function ConversationsList({
   selectedTagIds = [],
   onTagFilterChange,
   onOpenSearch,
+  onMarkAsUnread,
 }: ConversationsListProps) {
   const [search, setSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
@@ -419,6 +421,7 @@ export default function ConversationsList({
               conversation={conversation}
               isSelected={conversation.id === selectedId}
               onClick={() => onSelect(conversation)}
+              onMarkAsUnread={onMarkAsUnread}
             />
           ))
         )}
@@ -861,6 +864,7 @@ interface ConversationItemProps {
   conversation: Conversation;
   isSelected: boolean;
   onClick: () => void;
+  onMarkAsUnread?: (conversationId: string) => void;
 }
 
 // Telegram-style avatar colors (7 vibrant colors - using hex values for inline styles)
@@ -892,9 +896,10 @@ function getInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-function ConversationItem({ conversation, isSelected, onClick }: ConversationItemProps) {
+function ConversationItem({ conversation, isSelected, onClick, onMarkAsUnread }: ConversationItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const isGroup = conversation.type === 'group' || conversation.type === 'supergroup';
   const hasAvatar = conversation.avatarUrl && !imageError;
 
@@ -903,9 +908,31 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
   const avatarBg = avatarColorScheme.bg;
   const avatarColor = avatarColorScheme.text;
 
+  // Close context menu on click outside
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClick = () => setContextMenu(null);
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [contextMenu]);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMarkAsUnread = () => {
+    if (onMarkAsUnread) {
+      onMarkAsUnread(conversation.id);
+    }
+    setContextMenu(null);
+  };
+
   return (
+    <>
     <div
       onClick={onClick}
+      onContextMenu={handleContextMenu}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -1090,6 +1117,68 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
         )}
       </div>
     </div>
+
+    {/* Context Menu Portal */}
+    {contextMenu && typeof window !== 'undefined' && createPortal(
+      <div
+        style={{
+          position: 'fixed',
+          top: contextMenu.y,
+          left: contextMenu.x,
+          background: 'var(--bg-elevated, #1a1a1a)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '8px',
+          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)',
+          zIndex: 10000,
+          minWidth: '160px',
+          overflow: 'hidden',
+          animation: 'contextMenuEnter 100ms ease-out',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <style>{`
+          @keyframes contextMenuEnter {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+          }
+        `}</style>
+        <button
+          onClick={handleMarkAsUnread}
+          style={{
+            width: '100%',
+            padding: '10px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--text-primary)',
+            fontSize: '13px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            textAlign: 'left',
+            transition: 'background 80ms ease',
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+        >
+          <UnreadIcon />
+          Mark as unread
+        </button>
+      </div>,
+      document.body
+    )}
+    </>
+  );
+}
+
+// Unread icon for context menu
+function UnreadIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <circle cx="8" cy="8" r="6" />
+      <circle cx="8" cy="8" r="2.5" fill="currentColor" stroke="none" />
+    </svg>
   );
 }
 

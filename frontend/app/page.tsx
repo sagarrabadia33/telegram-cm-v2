@@ -275,21 +275,34 @@ export default function Home() {
         setTimeout(() => setHighlightMessageId(null), 3000);
       }
 
+      // Mark conversation as read (fire and forget)
+      fetch(`/api/conversations/${conversationId}/mark-as-read`, {
+        method: 'POST',
+      }).catch(console.error);
+
       // Find the conversation in the list
       const conversation = allConversations.find((c) => c.id === conversationId);
       if (conversation) {
-        setSelectedConversation(conversation);
+        // Optimistic UI update for unread
+        if (conversation.unread > 0) {
+          setAllConversations((prev) =>
+            prev.map((c) =>
+              c.id === conversationId ? { ...c, unread: 0 } : c
+            )
+          );
+        }
+        setSelectedConversation({ ...conversation, unread: 0 });
       } else {
         // Fetch fresh if not in current list (might be filtered out by tags)
         fetch(`/api/conversations/${conversationId}`)
           .then((res) => res.json())
           .then((data) => {
             if (data && data.id) {
-              setSelectedConversation(data);
+              setSelectedConversation({ ...data, unread: 0 });
               // Also add to conversations list if not present
               setAllConversations((prev) => {
                 if (!prev.find((c) => c.id === data.id)) {
-                  return [data, ...prev];
+                  return [{ ...data, unread: 0 }, ...prev];
                 }
                 return prev;
               });
@@ -376,13 +389,61 @@ export default function Home() {
     }
   }, [selectedConversation, fetchMessages]);
 
-  const handleSelectConversation = (conversation: Conversation) => {
+  const handleSelectConversation = useCallback((conversation: Conversation) => {
     setSelectedConversation(conversation);
     // On mobile, navigate to messages view when selecting a conversation
     if (isMobile) {
       setMobilePanel('messages');
     }
-  };
+
+    // Mark conversation as read (Telegram-style)
+    // Only if there are unread messages
+    if (conversation.unread > 0) {
+      // Optimistic UI update - immediately clear unread badge
+      setAllConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversation.id
+            ? { ...c, unread: 0 }
+            : c
+        )
+      );
+
+      // Call mark-as-read API (fire and forget for better UX)
+      fetch(`/api/conversations/${conversation.id}/mark-as-read`, {
+        method: 'POST',
+      }).catch((error) => {
+        console.error('Failed to mark conversation as read:', error);
+        // Optionally revert optimistic update on error
+      });
+    }
+  }, [isMobile]);
+
+  // Handle mark as unread from context menu
+  const handleMarkAsUnread = useCallback((conversationId: string) => {
+    // Optimistic UI update - set unread to 1
+    setAllConversations((prev) =>
+      prev.map((c) =>
+        c.id === conversationId
+          ? { ...c, unread: 1 }
+          : c
+      )
+    );
+
+    // Call mark-as-unread API
+    fetch(`/api/conversations/${conversationId}/mark-as-unread`, {
+      method: 'POST',
+    }).catch((error) => {
+      console.error('Failed to mark conversation as unread:', error);
+      // Revert optimistic update on error
+      setAllConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversationId
+            ? { ...c, unread: 0 }
+            : c
+        )
+      );
+    });
+  }, []);
 
   const handleSelectContact = (contact: Contact) => {
     setSelectedContact(contact);
@@ -769,6 +830,7 @@ export default function Home() {
             selectedTagIds={selectedTagIds}
             onTagFilterChange={handleTagFilterChange}
             onOpenSearch={() => setIsSearchOpen(true)}
+            onMarkAsUnread={handleMarkAsUnread}
           />
         </div>
       </div>

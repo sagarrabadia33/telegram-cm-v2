@@ -110,7 +110,7 @@ export async function GET(
       lastMessage: lastMessage?.body || 'No messages',
       lastMessageDirection: lastMessage?.direction || 'inbound',
       time: actualLastMessageTime,
-      unread: 0,
+      unread: conv.unreadCount || 0,
       online: contact?.isOnline || false,
       lastSeenAt: contact?.lastSeenAt?.toISOString() || null,
       phone: contact?.primaryPhone || '-',

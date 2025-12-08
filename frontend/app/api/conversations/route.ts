@@ -143,7 +143,7 @@ export async function GET(request: NextRequest) {
         lastMessage: lastMessage?.body || 'No messages',
         lastMessageDirection: lastMessage?.direction || 'inbound',
         time: actualLastMessageTime, // Use actual message time, not unreliable lastMessageAt
-        unread: 0,
+        unread: conv.unreadCount || 0,
         online: contact?.isOnline || false,
         lastSeenAt: contact?.lastSeenAt?.toISOString() || null,
         phone: contact?.primaryPhone || '-',

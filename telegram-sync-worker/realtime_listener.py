@@ -53,6 +53,9 @@ DIALOG_DISCOVERY_INTERVAL = int(os.getenv('DIALOG_DISCOVERY_INTERVAL', '900'))  
 DIALOG_DISCOVERY_LIMIT = int(os.getenv('DIALOG_DISCOVERY_LIMIT', '200'))  # Increased to 200 dialogs
 AUTO_CREATE_CONVERSATION = True  # Auto-create conversations on first message
 
+# Initial message sync for newly discovered conversations
+INITIAL_MESSAGE_SYNC_LIMIT = 50  # Sync last 50 messages for newly discovered conversations
+
 
 def log(message: str, level: str = 'INFO'):
     """Simple logging with timestamp."""
@@ -152,8 +155,12 @@ class RealtimeListener:
         self.started_at = datetime.now(timezone.utc)
         self._update_state('running')
 
-        # Run catch-up sync
+        # Run catch-up sync for existing conversations with messages
         await self._catch_up_sync()
+
+        # CRITICAL: Sync messages for conversations with 0 messages
+        # These are conversations created by discovery but never had messages synced
+        await self._sync_empty_conversations()
 
         # Register event handlers
         self._register_handlers()
@@ -254,6 +261,15 @@ class RealtimeListener:
                 conversation = await self._create_conversation_from_chat(chat_id, message, source='message')
                 if conversation:
                     log(f"[MESSAGE] AUTO-CREATED: {conversation.get('title', 'Unknown')} (chat_id={chat_id}, type={conversation.get('type')})")
+
+                    # Sync historical messages for this newly created conversation
+                    # This ensures it appears in UI even if this is the only message
+                    try:
+                        msg_count = await self._sync_initial_messages(conversation['id'], chat_id)
+                        if msg_count > 0:
+                            log(f"[MESSAGE] Synced {msg_count} initial messages for {conversation.get('title', 'Unknown')}")
+                    except Exception as sync_err:
+                        log(f"[MESSAGE] Failed to sync initial messages: {sync_err}", level='WARN')
                 else:
                     log(f"[MESSAGE] WARN: Auto-create returned None for chat_id={chat_id}", level='WARN')
             except Exception as e:
@@ -308,15 +324,27 @@ class RealtimeListener:
                 Json(msg_data['metadata'])
             ))
 
-            # Update conversation timestamps
-            cursor.execute("""
-                UPDATE telegram_crm."Conversation"
-                SET "lastMessageAt" = GREATEST("lastMessageAt", %s),
-                    "lastSyncedMessageId" = %s,
-                    "lastSyncedAt" = NOW(),
-                    "updatedAt" = NOW()
-                WHERE id = %s
-            """, (msg_data['sent_at'], msg_data['external_message_id'], conversation['id']))
+            # Update conversation timestamps and unread count
+            # Increment unreadCount only for inbound messages (messages from others)
+            if msg_data['direction'] == 'inbound':
+                cursor.execute("""
+                    UPDATE telegram_crm."Conversation"
+                    SET "lastMessageAt" = GREATEST("lastMessageAt", %s),
+                        "lastSyncedMessageId" = %s,
+                        "lastSyncedAt" = NOW(),
+                        "unreadCount" = "unreadCount" + 1,
+                        "updatedAt" = NOW()
+                    WHERE id = %s
+                """, (msg_data['sent_at'], msg_data['external_message_id'], conversation['id']))
+            else:
+                cursor.execute("""
+                    UPDATE telegram_crm."Conversation"
+                    SET "lastMessageAt" = GREATEST("lastMessageAt", %s),
+                        "lastSyncedMessageId" = %s,
+                        "lastSyncedAt" = NOW(),
+                        "updatedAt" = NOW()
+                    WHERE id = %s
+                """, (msg_data['sent_at'], msg_data['external_message_id'], conversation['id']))
 
             self.conn.commit()
             cursor.close()
@@ -395,6 +423,62 @@ class RealtimeListener:
 
         log(f"Catch-up complete: {total_synced} messages synced, {skipped} conversations up-to-date")
 
+    async def _sync_empty_conversations(self):
+        """
+        Sync messages for conversations that have 0 messages.
+
+        This catches conversations that were created by dialog discovery
+        but never had their initial messages synced. This ensures all
+        conversations appear in the UI.
+        """
+        log("[EMPTY-SYNC] Checking for conversations with 0 messages...")
+
+        cursor = self.conn.cursor()
+        try:
+            # Find conversations with no messages
+            cursor.execute("""
+                SELECT c.id, c."externalChatId", c.title
+                FROM telegram_crm."Conversation" c
+                LEFT JOIN telegram_crm."Message" m ON m."conversationId" = c.id
+                WHERE c.source = 'telegram'
+                  AND c."isSyncDisabled" = FALSE
+                  AND c.type IN ('private', 'group', 'supergroup')
+                GROUP BY c.id, c."externalChatId", c.title
+                HAVING COUNT(m.id) = 0
+                ORDER BY c."createdAt" DESC
+                LIMIT 100
+            """)
+            empty_convs = cursor.fetchall()
+            cursor.close()
+
+            if not empty_convs:
+                log("[EMPTY-SYNC] No empty conversations found")
+                return
+
+            log(f"[EMPTY-SYNC] Found {len(empty_convs)} conversations with 0 messages")
+
+            synced_count = 0
+            for conv_id, chat_id, title in empty_convs:
+                if self._shutdown_requested:
+                    break
+
+                try:
+                    msg_count = await self._sync_initial_messages(conv_id, int(chat_id))
+                    if msg_count > 0:
+                        log(f"[EMPTY-SYNC] {title}: synced {msg_count} messages")
+                        synced_count += 1
+                    else:
+                        log(f"[EMPTY-SYNC] {title}: no messages found in Telegram")
+                except Exception as e:
+                    log(f"[EMPTY-SYNC] Error syncing {title}: {e}", level='WARN')
+
+            log(f"[EMPTY-SYNC] Complete: synced messages for {synced_count}/{len(empty_convs)} conversations")
+
+        except Exception as e:
+            log(f"[EMPTY-SYNC] Error: {e}", level='ERROR')
+            if cursor:
+                cursor.close()
+
     async def _bulk_insert_messages(self, conversation_id: str, messages: list):
         """Bulk insert messages for catch-up sync."""
         if not messages:
@@ -427,18 +511,62 @@ class RealtimeListener:
             highest_id = max(int(m['external_message_id']) for m in messages)
             latest_time = max(m['sent_at'] for m in messages)
 
+            # Count inbound messages for unread tracking
+            inbound_count = sum(1 for m in messages if m['direction'] == 'inbound')
+
             cursor.execute("""
                 UPDATE telegram_crm."Conversation"
                 SET "lastSyncedMessageId" = %s,
                     "lastSyncedAt" = NOW(),
                     "lastMessageAt" = GREATEST("lastMessageAt", %s),
+                    "unreadCount" = "unreadCount" + %s,
                     "updatedAt" = NOW()
                 WHERE id = %s
-            """, (str(highest_id), latest_time, conversation_id))
+            """, (str(highest_id), latest_time, inbound_count, conversation_id))
 
             self.conn.commit()
         finally:
             cursor.close()
+
+    async def _sync_initial_messages(self, conversation_id: str, chat_id: int) -> int:
+        """
+        Sync initial messages for a newly created conversation.
+
+        This is called immediately after creating a new conversation via dialog discovery
+        to ensure the conversation has messages and will appear in the UI.
+
+        Args:
+            conversation_id: The database ID of the conversation
+            chat_id: The Telegram chat ID
+
+        Returns:
+            Number of messages synced
+        """
+        messages = []
+
+        try:
+            # Fetch recent messages from Telegram
+            async for msg in self.client.iter_messages(
+                chat_id,
+                limit=INITIAL_MESSAGE_SYNC_LIMIT
+            ):
+                if isinstance(msg, Message) and msg.id:
+                    msg_data = await self._prepare_message(msg)
+                    if msg_data:
+                        messages.append(msg_data)
+
+            if messages:
+                # Bulk insert messages
+                await self._bulk_insert_messages(conversation_id, messages)
+                log(f"[INITIAL-SYNC] Synced {len(messages)} messages for conversation {conversation_id}")
+                return len(messages)
+            else:
+                log(f"[INITIAL-SYNC] No messages found for conversation {conversation_id}")
+                return 0
+
+        except Exception as e:
+            log(f"[INITIAL-SYNC] Error syncing messages for {conversation_id}: {e}", level='ERROR')
+            return 0
 
     async def _prepare_message(self, message: Message) -> Optional[Dict[str, Any]]:
         """Prepare message data for database."""
@@ -748,13 +876,21 @@ class RealtimeListener:
                             errors += 1
                             continue
 
-                        # New conversation - create it
+                        # New conversation - create it AND sync initial messages
                         log(f"[DISCOVERY] NEW: {dialog_name} (chat_id={chat_id})")
                         try:
                             conv = await self._create_conversation_from_chat(chat_id, source='discovery')
                             if conv:
                                 discovered += 1
                                 log(f"[DISCOVERY] Created: {conv['title']} (type={conv['type']})")
+
+                                # CRITICAL: Sync initial messages so conversation appears in UI
+                                try:
+                                    msg_count = await self._sync_initial_messages(conv['id'], chat_id)
+                                    if msg_count > 0:
+                                        log(f"[DISCOVERY] Synced {msg_count} initial messages for {conv['title']}")
+                                except Exception as sync_err:
+                                    log(f"[DISCOVERY] Failed to sync initial messages for {conv['title']}: {sync_err}", level='WARN')
                             else:
                                 log(f"[DISCOVERY] Failed to create conversation for {dialog_name}", level='WARN')
                                 errors += 1
