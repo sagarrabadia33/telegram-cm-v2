@@ -67,18 +67,30 @@ export async function GET(
 
     const transformed = messages.map((msg) => {
       // Parse attachments for media display
-      let media: { type: string; url: string; }[] = [];
+      let media: { type: string; url: string; name?: string; mimeType?: string; }[] = [];
       if (msg.hasAttachments && msg.attachments) {
-        const attachments = msg.attachments as { files?: { path: string; type: string; size?: number }[] };
+        const attachments = msg.attachments as {
+          files?: {
+            path: string;
+            type: string;
+            size?: number;
+            name?: string;
+            mimeType?: string;
+            storageKey?: string;
+          }[]
+        };
         if (attachments.files) {
           media = attachments.files.map((file) => ({
             type: file.type || 'unknown',
             // Convert path to API URL for serving media files
             // File paths are like /media/telegram/photos/xxx.jpg
             // We serve them via /api/media/telegram/photos/xxx.jpg
+            // Outgoing paths are like /media/outgoing/upload_xxx
             url: file.path.startsWith('/media/')
               ? `/api${file.path}`
               : `/api/media${file.path}`,
+            name: file.name,  // Include filename for display
+            mimeType: file.mimeType,  // Include mime type for icons
           }));
         }
       }
