@@ -625,16 +625,17 @@ export default function Home() {
   // Handle sending messages with attachments (Linear-style outbox pattern)
   const handleSendMessageWithAttachment = async (
     text: string,
-    attachment: { type: string; url: string; filename: string; mimeType: string }
+    attachment: { type: string; url: string; filename?: string; mimeType: string }
   ) => {
     if (!selectedConversation) return;
 
     const tempId = `temp-${Date.now()}`;
+    const displayFilename = attachment.filename || (attachment.type === 'photo' ? 'Photo' : 'Attachment');
 
     // Add optimistic message with attachment indicator
     const newMessage: Message = {
       id: tempId,
-      text: text || `📎 ${attachment.filename}`,
+      text: text || `📎 ${displayFilename}`,
       sent: true,
       time: new Date().toISOString(),
       deliveredAt: null,
@@ -645,7 +646,7 @@ export default function Home() {
     setMessages((prev) => [...prev, newMessage]);
 
     // Update conversation last message optimistically
-    const lastMsgPreview = text || `📎 ${attachment.filename}`;
+    const lastMsgPreview = text || `📎 ${displayFilename}`;
     setAllConversations((prev) =>
       prev.map((c) =>
         c.id === selectedConversation.id

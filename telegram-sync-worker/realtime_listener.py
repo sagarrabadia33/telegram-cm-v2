@@ -12,7 +12,7 @@ GUARANTEES:
 - No message loss (catch-up sync on startup)
 
 Author: telegram-crm-v2
-Build: v2.1-20251209 (attachments fix + duplicate prevention)
+Build: v2.2-20251209 (outbound attachments inline + instant Message record)
 """
 
 import os
@@ -124,6 +124,10 @@ class RealtimeListener:
         # Single processor ensures no conflicts, no duplicates, no race conditions
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._processed_message_ids: set = set()  # In-memory dedup for current session
+
+        # Unique process ID for distributed locking in outbox processor
+        import uuid
+        self._process_id = f"worker-{uuid.uuid4().hex[:8]}"
 
     def request_shutdown(self):
         """Request a graceful shutdown."""
@@ -2129,6 +2133,58 @@ class RealtimeListener:
                         "updatedAt" = NOW()
                     WHERE id = %s
                 """, (str(sent_message.id) if sent_message else None, msg_id))
+
+                # TELEGRAM-STYLE: Create Message record immediately for instant display
+                # This ensures sender sees the message with attachment inline right away
+                message_date = sent_message.date.replace(tzinfo=timezone.utc) if sent_message.date else datetime.now(timezone.utc)
+                db_msg_id = 'm' + hashlib.md5(
+                    f"{sent_message.id}-{message_date.timestamp()}".encode()
+                ).hexdigest()[:24]
+
+                # Build attachments JSON with correct path for outgoing files
+                attachments_json = None
+                has_attachments = bool(attach_type and attach_url)
+                if has_attachments:
+                    # Use /media/outgoing/{storageKey} path which the frontend serves from FileUpload table
+                    attachments_json = Json({
+                        'files': [{
+                            'type': attach_type,
+                            'path': f'/media/outgoing/{attach_url}',  # attach_url is the storage key
+                            'mimeType': attach_mime or 'application/octet-stream',
+                            'name': attach_name or 'Attachment',
+                        }]
+                    })
+
+                # Insert Message record (ON CONFLICT to handle if sync already created it)
+                cursor.execute("""
+                    INSERT INTO telegram_crm."Message" (
+                        id, "conversationId", "contactId", source, "externalMessageId",
+                        direction, "contentType", body, "sentAt", status,
+                        "hasAttachments", attachments, metadata, "createdAt"
+                    )
+                    VALUES (%s, %s, NULL, 'telegram', %s, 'outbound', %s, %s, %s, 'sent', %s, %s, %s, NOW())
+                    ON CONFLICT (source, "conversationId", "externalMessageId")
+                    DO UPDATE SET
+                        attachments = COALESCE(EXCLUDED.attachments, telegram_crm."Message".attachments),
+                        status = 'sent'
+                """, (
+                    db_msg_id, conv_id, str(sent_message.id),
+                    'media' if has_attachments else 'text',
+                    text or attach_caption or '',
+                    message_date,
+                    has_attachments,
+                    attachments_json,
+                    Json({'outbox_msg_id': msg_id})  # Track origin
+                ))
+
+                # Update conversation lastMessageAt
+                cursor.execute("""
+                    UPDATE telegram_crm."Conversation"
+                    SET "lastMessageAt" = GREATEST("lastMessageAt", %s),
+                        "updatedAt" = NOW()
+                    WHERE id = %s
+                """, (message_date, conv_id))
+
                 self.conn.commit()
                 cursor.close()
                 log(f"[OUTBOX] SENT to {title}: {(text or attach_type or '')[:50]}...")

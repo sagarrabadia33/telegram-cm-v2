@@ -11,7 +11,7 @@ interface MessageViewProps {
   conversation: Conversation | null;
   messages: Message[];
   onSendMessage: (text: string) => void;
-  onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename: string; mimeType: string }) => void;
+  onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename?: string; mimeType: string }) => void;
   onTagsChange?: (conversationId: string, tags: Tag[]) => void;
   highlightMessageId?: string | null;
 }
@@ -355,15 +355,18 @@ interface MessageInputWrapperProps {
   onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onSend: () => void;
-  onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename: string; mimeType: string }) => void;
+  onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename?: string; mimeType: string }) => void;
   conversationId?: string;
 }
 
 function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown, onSend, onSendWithAttachment, conversationId }: MessageInputWrapperProps) {
   const [isFocused, setIsFocused] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [attachedFile, setAttachedFile] = useState<{ file: File; type: string; preview?: string; isImage?: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 100x RELIABLE: AbortController for cancellable uploads
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const handleAttachClick = () => {
     fileInputRef.current?.click();
@@ -398,6 +401,13 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
   };
 
   const handleRemoveAttachment = () => {
+    // 100x RELIABLE: Cancel any in-progress upload when file is removed
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
     if (attachedFile?.preview) {
       URL.revokeObjectURL(attachedFile.preview);
     }
@@ -407,22 +417,55 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
   const handleSendWithFile = async () => {
     if (!attachedFile || !conversationId) return;
 
+    // 100x RELIABLE: Create AbortController for cancellable upload
+    abortControllerRef.current = new AbortController();
     setIsUploading(true);
+    setUploadProgress(0);
+
     try {
-      // Upload file first
+      // Upload file with progress tracking using XMLHttpRequest
       const formData = new FormData();
       formData.append('file', attachedFile.file);
 
-      const uploadRes = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
+      const uploadData = await new Promise<{ success: boolean; file: { id: string; filename: string; mimeType: string; size: number; storageKey: string; type: string } }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+
+        // Track upload progress
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const progress = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(progress);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch {
+              reject(new Error('Invalid response'));
+            }
+          } else {
+            reject(new Error(`Upload failed: ${xhr.status}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network error'));
+        xhr.onabort = () => reject(new Error('Upload cancelled'));
+
+        // 100x RELIABLE: Handle abort signal
+        abortControllerRef.current?.signal.addEventListener('abort', () => {
+          xhr.abort();
+        });
+
+        xhr.open('POST', '/api/upload');
+        xhr.send(formData);
       });
 
-      if (!uploadRes.ok) {
-        throw new Error('Upload failed');
+      // Check if cancelled during upload
+      if (abortControllerRef.current?.signal.aborted) {
+        return;
       }
-
-      const uploadData = await uploadRes.json();
 
       // Send message with attachment
       // Use the type from the upload response (respects sendAs choice)
@@ -440,12 +483,21 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
       }
 
       // Clear state
-      handleRemoveAttachment();
+      if (attachedFile?.preview) {
+        URL.revokeObjectURL(attachedFile.preview);
+      }
+      setAttachedFile(null);
     } catch (error) {
+      // Don't show error if cancelled
+      if (error instanceof Error && error.message === 'Upload cancelled') {
+        return;
+      }
       console.error('Failed to upload file:', error);
       alert('Failed to upload file. Please try again.');
     } finally {
+      abortControllerRef.current = null;
       setIsUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -461,7 +513,7 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-      {/* Attachment preview */}
+      {/* Attachment preview with progress and cancel */}
       {attachedFile && (
         <div style={{
           display: 'flex',
@@ -470,13 +522,50 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
           padding: 'var(--space-2)',
           background: 'var(--bg-hover)',
           borderRadius: 'var(--radius-md)',
+          position: 'relative',
+          overflow: 'hidden',
         }}>
+          {/* Upload progress bar */}
+          {isUploading && (
+            <div style={{
+              position: 'absolute',
+              left: 0,
+              bottom: 0,
+              height: '3px',
+              width: `${uploadProgress}%`,
+              background: 'var(--accent-primary)',
+              transition: 'width 100ms ease',
+            }} />
+          )}
           {attachedFile.preview ? (
-            <img
-              src={attachedFile.preview}
-              alt="Preview"
-              style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }}
-            />
+            <div style={{ position: 'relative' }}>
+              <img
+                src={attachedFile.preview}
+                alt="Preview"
+                style={{
+                  width: '48px',
+                  height: '48px',
+                  objectFit: 'cover',
+                  borderRadius: 'var(--radius-sm)',
+                  opacity: isUploading ? 0.6 : 1,
+                }}
+              />
+              {isUploading && (
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.3)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  <span style={{ color: 'white', fontSize: '12px', fontWeight: 600 }}>
+                    {uploadProgress}%
+                  </span>
+                </div>
+              )}
+            </div>
           ) : (
             <div style={{
               width: '48px',
@@ -486,8 +575,24 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
               justifyContent: 'center',
               background: 'var(--bg-secondary)',
               borderRadius: 'var(--radius-sm)',
+              position: 'relative',
             }}>
               <AttachmentIcon style={{ width: '20px', height: '20px', color: 'var(--text-secondary)' }} />
+              {isUploading && (
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.3)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  <span style={{ color: 'white', fontSize: '12px', fontWeight: 600 }}>
+                    {uploadProgress}%
+                  </span>
+                </div>
+              )}
             </div>
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -495,20 +600,30 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
               {attachedFile.file.name}
             </div>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-              {(attachedFile.file.size / 1024).toFixed(1)} KB
+              {isUploading
+                ? `Uploading... ${uploadProgress}%`
+                : attachedFile.file.size >= 1024 * 1024
+                  ? `${(attachedFile.file.size / (1024 * 1024)).toFixed(1)} MB`
+                  : `${(attachedFile.file.size / 1024).toFixed(1)} KB`
+              }
             </div>
           </div>
           <button
             onClick={handleRemoveAttachment}
+            title={isUploading ? 'Cancel upload' : 'Remove attachment'}
             style={{
               padding: 'var(--space-1)',
-              background: 'none',
+              background: isUploading ? 'var(--error)' : 'none',
               border: 'none',
+              borderRadius: isUploading ? 'var(--radius-sm)' : 0,
               cursor: 'pointer',
-              color: 'var(--text-tertiary)',
+              color: isUploading ? 'white' : 'var(--text-tertiary)',
+              fontWeight: isUploading ? 600 : 400,
+              fontSize: isUploading ? '12px' : '16px',
+              minWidth: isUploading ? '60px' : 'auto',
             }}
           >
-            &times;
+            {isUploading ? 'Cancel' : '×'}
           </button>
         </div>
       )}
