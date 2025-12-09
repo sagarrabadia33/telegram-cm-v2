@@ -11,6 +11,7 @@ interface MessageViewProps {
   conversation: Conversation | null;
   messages: Message[];
   onSendMessage: (text: string) => void;
+  onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename: string; mimeType: string }) => void;
   onTagsChange?: (conversationId: string, tags: Tag[]) => void;
   highlightMessageId?: string | null;
 }
@@ -19,6 +20,7 @@ export default function MessageView({
   conversation,
   messages,
   onSendMessage,
+  onSendWithAttachment,
   onTagsChange,
   highlightMessageId,
 }: MessageViewProps) {
@@ -339,6 +341,8 @@ export default function MessageView({
           onInputChange={handleInputChange}
           onKeyDown={handleKeyDown}
           onSend={handleSend}
+          onSendWithAttachment={onSendWithAttachment}
+          conversationId={conversation.id}
         />
       </div>
     </div>
@@ -351,59 +355,218 @@ interface MessageInputWrapperProps {
   onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onSend: () => void;
+  onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename: string; mimeType: string }) => void;
+  conversationId?: string;
 }
 
-function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown, onSend }: MessageInputWrapperProps) {
+function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown, onSend, onSendWithAttachment, conversationId }: MessageInputWrapperProps) {
   const [isFocused, setIsFocused] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [attachedFile, setAttachedFile] = useState<{ file: File; type: string; preview?: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAttachClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Determine type
+    let type = 'document';
+    if (file.type.startsWith('image/')) type = 'photo';
+    else if (file.type.startsWith('video/')) type = 'video';
+    else if (file.type.startsWith('audio/')) type = 'audio';
+
+    // Create preview for images
+    let preview: string | undefined;
+    if (type === 'photo') {
+      preview = URL.createObjectURL(file);
+    }
+
+    setAttachedFile({ file, type, preview });
+
+    // Clear input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveAttachment = () => {
+    if (attachedFile?.preview) {
+      URL.revokeObjectURL(attachedFile.preview);
+    }
+    setAttachedFile(null);
+  };
+
+  const handleSendWithFile = async () => {
+    if (!attachedFile || !conversationId) return;
+
+    setIsUploading(true);
+    try {
+      // Upload file first
+      const formData = new FormData();
+      formData.append('file', attachedFile.file);
+
+      const uploadRes = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        throw new Error('Upload failed');
+      }
+
+      const uploadData = await uploadRes.json();
+
+      // Send message with attachment
+      if (onSendWithAttachment) {
+        onSendWithAttachment(inputValue, {
+          type: uploadData.file.type,
+          url: uploadData.file.storageKey,
+          filename: uploadData.file.filename,
+          mimeType: uploadData.file.mimeType,
+        });
+      }
+
+      // Clear state
+      handleRemoveAttachment();
+    } catch (error) {
+      console.error('Failed to upload file:', error);
+      alert('Failed to upload file. Please try again.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleSendClick = () => {
+    if (attachedFile) {
+      handleSendWithFile();
+    } else {
+      onSend();
+    }
+  };
+
+  const canSend = (inputValue.trim() || attachedFile) && !isUploading;
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'flex-end',
-        gap: 'var(--space-3)',
-        background: 'var(--bg-tertiary)',
-        border: `1px solid ${isFocused ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-        borderRadius: 'var(--radius-lg)',
-        padding: 'var(--space-2) var(--space-3)',
-        transition: 'border-color 150ms ease, box-shadow 150ms ease',
-        boxShadow: isFocused ? '0 0 0 2px var(--accent-subtle)' : 'none',
-      }}
-    >
-      <IconButton title="Attach File">
-        <AttachmentIcon style={{ width: '18px', height: '18px' }} />
-      </IconButton>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+      {/* Attachment preview */}
+      {attachedFile && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--space-2)',
+          padding: 'var(--space-2)',
+          background: 'var(--bg-hover)',
+          borderRadius: 'var(--radius-md)',
+        }}>
+          {attachedFile.preview ? (
+            <img
+              src={attachedFile.preview}
+              alt="Preview"
+              style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }}
+            />
+          ) : (
+            <div style={{
+              width: '48px',
+              height: '48px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'var(--bg-secondary)',
+              borderRadius: 'var(--radius-sm)',
+            }}>
+              <AttachmentIcon style={{ width: '20px', height: '20px', color: 'var(--text-secondary)' }} />
+            </div>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {attachedFile.file.name}
+            </div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+              {(attachedFile.file.size / 1024).toFixed(1)} KB
+            </div>
+          </div>
+          <button
+            onClick={handleRemoveAttachment}
+            style={{
+              padding: 'var(--space-1)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            &times;
+          </button>
+        </div>
+      )}
 
-      <textarea
-        ref={textareaRef}
-        value={inputValue}
-        onChange={onInputChange}
-        onKeyDown={onKeyDown}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        placeholder="Type a message..."
-        rows={1}
+      {/* Input area */}
+      <div
         style={{
-          flex: 1,
-          background: 'transparent',
-          border: 'none',
-          outline: 'none',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 'var(--text-md)',
-          color: 'var(--text-primary)',
-          resize: 'none',
-          minHeight: '24px',
-          maxHeight: '120px',
-          lineHeight: '1.5',
+          display: 'flex',
+          alignItems: 'flex-end',
+          gap: 'var(--space-3)',
+          background: 'var(--bg-tertiary)',
+          border: `1px solid ${isFocused ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+          borderRadius: 'var(--radius-lg)',
+          padding: 'var(--space-2) var(--space-3)',
+          transition: 'border-color 150ms ease, box-shadow 150ms ease',
+          boxShadow: isFocused ? '0 0 0 2px var(--accent-subtle)' : 'none',
         }}
-        className="placeholder:text-[var(--text-quaternary)]"
-      />
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
-        <IconButton title="Emoji">
-          <EmojiIcon style={{ width: '18px', height: '18px' }} />
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          onChange={handleFileChange}
+          style={{ display: 'none' }}
+          accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar"
+        />
+        <IconButton title="Attach File" onClick={handleAttachClick}>
+          <AttachmentIcon style={{ width: '18px', height: '18px' }} />
         </IconButton>
-        <SendButton onClick={onSend} disabled={!inputValue.trim()} />
+
+        <textarea
+          ref={textareaRef}
+          value={inputValue}
+          onChange={onInputChange}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSendClick();
+            } else {
+              onKeyDown(e);
+            }
+          }}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          placeholder={attachedFile ? "Add a caption..." : "Type a message..."}
+          rows={1}
+          style={{
+            flex: 1,
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 'var(--text-md)',
+            color: 'var(--text-primary)',
+            resize: 'none',
+            minHeight: '24px',
+            maxHeight: '120px',
+            lineHeight: '1.5',
+          }}
+          className="placeholder:text-[var(--text-quaternary)]"
+        />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+          <IconButton title="Emoji">
+            <EmojiIcon style={{ width: '18px', height: '18px' }} />
+          </IconButton>
+          <SendButton onClick={handleSendClick} disabled={!canSend} loading={isUploading} />
+        </div>
       </div>
     </div>
   );
@@ -412,16 +575,17 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
 interface SendButtonProps {
   onClick: () => void;
   disabled: boolean;
+  loading?: boolean;
 }
 
-function SendButton({ onClick, disabled }: SendButtonProps) {
+function SendButton({ onClick, disabled, loading }: SendButtonProps) {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
     <button
       onClick={onClick}
-      disabled={disabled}
-      title="Send Message"
+      disabled={disabled || loading}
+      title={loading ? "Uploading..." : "Send Message"}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -432,17 +596,30 @@ function SendButton({ onClick, disabled }: SendButtonProps) {
         justifyContent: 'center',
         border: 'none',
         borderRadius: 'var(--radius-md)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
         transition: 'all 150ms ease',
-        background: disabled
+        background: (disabled || loading)
           ? 'var(--bg-hover)'
           : isHovered
           ? 'var(--accent-hover)'
           : 'var(--accent-primary)',
-        color: disabled ? 'var(--text-quaternary)' : 'white',
+        color: (disabled || loading) ? 'var(--text-quaternary)' : 'white',
       }}
     >
-      <SendIcon style={{ width: '18px', height: '18px' }} />
+      {loading ? (
+        <div
+          style={{
+            width: '16px',
+            height: '16px',
+            border: '2px solid currentColor',
+            borderTopColor: 'transparent',
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }}
+        />
+      ) : (
+        <SendIcon style={{ width: '18px', height: '18px' }} />
+      )}
     </button>
   );
 }

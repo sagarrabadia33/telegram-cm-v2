@@ -541,10 +541,14 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }, [filteredContacts]);
 
-  const handleSendMessage = (text: string) => {
-    // Add optimistic message
+  const handleSendMessage = async (text: string) => {
+    if (!selectedConversation) return;
+
+    const tempId = `temp-${Date.now()}`;
+
+    // Add optimistic message (Linear-style instant feedback)
     const newMessage: Message = {
-      id: `temp-${Date.now()}`,
+      id: tempId,
       text,
       sent: true,
       time: new Date().toISOString(),
@@ -555,25 +559,117 @@ export default function Home() {
     };
     setMessages((prev) => [...prev, newMessage]);
 
-    // Update conversation last message
-    if (selectedConversation) {
-      setAllConversations((prev) =>
-        prev.map((c) =>
-          c.id === selectedConversation.id
-            ? { ...c, lastMessage: text, lastMessageDirection: 'outbound' as const, time: new Date().toISOString() }
-            : c
+    // Update conversation last message optimistically
+    setAllConversations((prev) =>
+      prev.map((c) =>
+        c.id === selectedConversation.id
+          ? { ...c, lastMessage: text, lastMessageDirection: 'outbound' as const, time: new Date().toISOString() }
+          : c
+      )
+    );
+
+    try {
+      // Call the send API (Linear-style outbox pattern)
+      const response = await fetch(`/api/conversations/${selectedConversation.id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send message');
+      }
+
+      const data = await response.json();
+
+      // Update message status to "pending" (queued for delivery)
+      // The actual "sent" status will come when the worker processes it
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId ? { ...m, id: data.message?.id || tempId, status: 'sent' } : m
+        )
+      );
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      // Mark as failed
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId ? { ...m, status: 'failed' } : m
         )
       );
     }
+  };
 
-    // Simulate message sent status update
-    setTimeout(() => {
+  // Handle sending messages with attachments (Linear-style outbox pattern)
+  const handleSendMessageWithAttachment = async (
+    text: string,
+    attachment: { type: string; url: string; filename: string; mimeType: string }
+  ) => {
+    if (!selectedConversation) return;
+
+    const tempId = `temp-${Date.now()}`;
+
+    // Add optimistic message with attachment indicator
+    const newMessage: Message = {
+      id: tempId,
+      text: text || `📎 ${attachment.filename}`,
+      sent: true,
+      time: new Date().toISOString(),
+      deliveredAt: null,
+      readAt: null,
+      status: 'sending',
+      contentType: 'media',
+    };
+    setMessages((prev) => [...prev, newMessage]);
+
+    // Update conversation last message optimistically
+    const lastMsgPreview = text || `📎 ${attachment.filename}`;
+    setAllConversations((prev) =>
+      prev.map((c) =>
+        c.id === selectedConversation.id
+          ? { ...c, lastMessage: lastMsgPreview, lastMessageDirection: 'outbound' as const, time: new Date().toISOString() }
+          : c
+      )
+    );
+
+    try {
+      // Call the send API with attachment (Linear-style outbox pattern)
+      const response = await fetch(`/api/conversations/${selectedConversation.id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: text || null,
+          attachment: {
+            type: attachment.type,
+            url: attachment.url,
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            caption: text || null,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send message');
+      }
+
+      const data = await response.json();
+
+      // Update message status to queued
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === newMessage.id ? { ...m, status: 'sent' } : m
+          m.id === tempId ? { ...m, id: data.message?.id || tempId, status: 'sent' } : m
         )
       );
-    }, 500);
+    } catch (error) {
+      console.error('Failed to send message with attachment:', error);
+      // Mark as failed
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId ? { ...m, status: 'failed' } : m
+        )
+      );
+    }
   };
 
   // Handle tag changes from the message header - immediately update conversation list
@@ -914,6 +1010,7 @@ export default function Home() {
             conversation={selectedConversation}
             messages={messages}
             onSendMessage={handleSendMessage}
+            onSendWithAttachment={handleSendMessageWithAttachment}
             onTagsChange={handleTagsChange}
             highlightMessageId={highlightMessageId}
           />

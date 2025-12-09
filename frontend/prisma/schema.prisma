@@ -141,6 +141,7 @@ model Conversation {
   followUps           FollowUp[]
   members             GroupMember[]
   messages            Message[]
+  outgoingMessages    OutgoingMessage[]
   telegramChat        TelegramChat?
 
   @@unique([source, externalChatId])
@@ -439,4 +440,67 @@ model TelegramWorkerSession {
   session_data Bytes
   created_at   DateTime? @default(now()) @db.Timestamptz(6)
   updated_at   DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+// LINEAR-STYLE OUTBOX: Reliable message sending queue
+// Messages are stored here first, then processed by the Telegram worker
+// This ensures 100% delivery even if the worker crashes
+model OutgoingMessage {
+  id                String    @id @default(cuid())
+  conversationId    String
+
+  // Message content
+  text              String?                   // Text body (optional if sending media only)
+  replyToMessageId  String?                   // External message ID to reply to
+
+  // Attachments (Telegram-style: photo, document, video, audio, voice)
+  attachmentType    String?                   // 'photo' | 'document' | 'video' | 'audio' | 'voice' | null
+  attachmentUrl     String?                   // URL or file path to the attachment
+  attachmentName    String?                   // Original filename for documents
+  attachmentMimeType String?                  // MIME type for proper handling
+  attachmentCaption String?                   // Caption for media (Telegram supports this)
+
+  // Delivery status (Linear-style state machine)
+  status            String    @default("pending")  // 'pending' | 'sending' | 'sent' | 'failed'
+  sentMessageId     String?                        // Telegram message ID after sending
+  errorMessage      String?                        // Error details if failed
+  retryCount        Int       @default(0)          // Number of retry attempts
+  maxRetries        Int       @default(3)          // Maximum retries before permanent failure
+
+  // Processing metadata
+  lockedBy          String?                   // Worker process ID that claimed this message
+  lockedAt          DateTime?                 // When the lock was acquired
+  scheduledFor      DateTime?                 // For scheduled messages (future feature)
+
+  // Timestamps
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  sentAt            DateTime?                 // When actually sent to Telegram
+
+  // Relations
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([conversationId])
+  @@index([createdAt])
+  @@index([scheduledFor])
+  @@index([lockedBy, lockedAt])
+}
+
+// File uploads storage for attachments
+model FileUpload {
+  id            String    @id @default(cuid())
+  filename      String                    // Original filename
+  mimeType      String                    // MIME type
+  size          Int                       // File size in bytes
+  storageKey    String    @unique         // Key in storage (local path or cloud URL)
+  storageType   String    @default("local") // 'local' | 's3' | 'cloudflare'
+  uploadedBy    String?                   // User/session identifier
+  expiresAt     DateTime?                 // For temporary files
+  metadata      Json?                     // Additional file metadata
+  createdAt     DateTime  @default(now())
+
+  @@index([storageKey])
+  @@index([createdAt])
+  @@index([expiresAt])
 }
