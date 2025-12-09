@@ -9,8 +9,9 @@ export async function GET(
     const { id } = await params;
     const url = new URL(request.url);
     const cursor = url.searchParams.get('cursor');
-    // Default to 100, max 500 messages per request
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '100'), 500);
+    // TELEGRAM-STYLE INSTANT LOAD: Default to 50 messages for fast initial load
+    // Users can scroll to load more via infinite scroll pagination
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 500);
 
     // Combined query: get conversation type and count in one go
     // Using select to minimize data transfer
