@@ -38,8 +38,14 @@ import { randomUUID } from 'crypto';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB (Telegram limit)
 
 // Determine Telegram attachment type from MIME
+// TELEGRAM ARCHITECTURE DECISION:
+// - 'photo' = compressed inline image, NO FILENAME preserved
+// - 'document' = original file with filename preserved
+// For CRM use case, we ALWAYS want filenames preserved, so images go as documents
 function getAttachmentType(mimeType: string): string {
-  if (mimeType.startsWith('image/')) return 'photo';
+  // Images sent as 'document' to preserve filename (100x reliable)
+  // If user wanted inline photo without name, they'd use camera/gallery directly
+  if (mimeType.startsWith('image/')) return 'document';  // NOT 'photo' - preserves filename!
   if (mimeType.startsWith('video/')) return 'video';
   if (mimeType.startsWith('audio/')) return 'audio';
   if (mimeType === 'audio/ogg') return 'voice';
