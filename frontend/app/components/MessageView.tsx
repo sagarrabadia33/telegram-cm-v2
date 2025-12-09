@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useLayoutEffect, useEffect } from 'react';
-import { SendIcon, AttachmentIcon, EmojiIcon, MoreIcon, SingleCheckIcon, DoubleCheckIcon, ClockIcon } from './Icons';
+import { SendIcon, AttachmentIcon, EmojiIcon, MoreIcon, SingleCheckIcon, DoubleCheckIcon, ClockIcon, DownloadIcon } from './Icons';
 import { Conversation, Message } from '../types';
 import { formatMessageTime, formatDate } from '../lib/utils';
 import { ConversationSummary } from './ConversationSummary';
@@ -898,19 +898,23 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
             </div>
           )}
 
-        {/* Media attachments (images/documents) */}
+        {/* Media attachments (images/documents) - 100x RELIABLE */}
         {hasMedia && message.media!.map((item, index) => {
           // Determine if this is an image that should be displayed inline
           // Check: type is photo/photos OR mimeType starts with image/
           const isImage = item.type === 'photos' || item.type === 'photo' ||
                           (item.mimeType && item.mimeType.startsWith('image/'));
+          const isVideo = item.type === 'video' || item.type === 'videos' ||
+                          (item.mimeType && item.mimeType.startsWith('video/'));
+          const displayName = item.name || (isImage ? 'Photo' : isVideo ? 'Video' : 'Document');
 
           return (
             <div key={index} style={{ marginBottom: text ? 'var(--space-2)' : 0 }}>
               {isImage && !imageError ? (
+                // INLINE IMAGE: Display image directly in chat bubble
                 <img
                   src={item.url}
-                  alt="Attachment"
+                  alt={displayName}
                   onError={() => setImageError(true)}
                   style={{
                     maxWidth: '100%',
@@ -920,19 +924,57 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
                   }}
                 />
               ) : (
-                <div style={{
-                  padding: 'var(--space-3)',
-                  background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
-                  borderRadius: 'var(--radius-md)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-2)',
-                }}>
-                  <AttachmentIcon style={{ width: '20px', height: '20px', color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }} />
-                  <span style={{ fontSize: 'var(--text-sm)', color: isSent ? 'rgba(255,255,255,0.9)' : 'var(--text-secondary)' }}>
-                    {item.name || (item.type === 'photos' || item.type === 'photo' ? 'Photo' : item.type === 'documents' || item.type === 'document' ? 'Document' : item.type === 'videos' || item.type === 'video' ? 'Video' : 'Attachment')}
-                  </span>
-                </div>
+                // DOCUMENT/FILE: Show with filename and download link
+                <a
+                  href={item.url}
+                  download={displayName}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--space-2)',
+                    padding: 'var(--space-3)',
+                    background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
+                    borderRadius: 'var(--radius-md)',
+                    textDecoration: 'none',
+                    cursor: 'pointer',
+                    transition: 'background 150ms ease',
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.background = isSent ? 'rgba(255,255,255,0.2)' : 'var(--bg-hover)'}
+                  onMouseOut={(e) => e.currentTarget.style.background = isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)'}
+                >
+                  <div style={{
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: 'var(--radius-md)',
+                    background: isSent ? 'rgba(255,255,255,0.15)' : 'var(--accent-subtle)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                    <AttachmentIcon style={{ width: '20px', height: '20px', color: isSent ? 'rgba(255,255,255,0.9)' : 'var(--accent-primary)' }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 'var(--text-sm)',
+                      fontWeight: 500,
+                      color: isSent ? 'white' : 'var(--text-primary)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {displayName}
+                    </div>
+                    <div style={{
+                      fontSize: 'var(--text-xs)',
+                      color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)',
+                    }}>
+                      {isVideo ? 'Video' : 'Document'} • Click to download
+                    </div>
+                  </div>
+                  <DownloadIcon style={{ width: '16px', height: '16px', color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }} />
+                </a>
               )}
             </div>
           );

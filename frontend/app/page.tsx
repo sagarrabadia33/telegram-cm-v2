@@ -630,23 +630,37 @@ export default function Home() {
     if (!selectedConversation) return;
 
     const tempId = `temp-${Date.now()}`;
-    const displayFilename = attachment.filename || (attachment.type === 'photo' ? 'Photo' : 'Attachment');
+    const isPhoto = attachment.type === 'photo';
+    const displayFilename = attachment.filename || (isPhoto ? 'Photo' : 'File');
 
-    // Add optimistic message with attachment indicator
+    // 100x RELIABLE: Build media URL for instant inline display
+    // For outgoing files, we serve them via /api/media/outgoing/{storageKey}
+    const mediaUrl = attachment.url.startsWith('upload_')
+      ? `/api/media/outgoing/${attachment.url}`
+      : attachment.url;
+
+    // Add optimistic message with FULL media data for instant inline display
     const newMessage: Message = {
       id: tempId,
-      text: text || `📎 ${displayFilename}`,
+      text: text || '',  // Don't put filename in text - let media display handle it
       sent: true,
       time: new Date().toISOString(),
       deliveredAt: null,
       readAt: null,
       status: 'sending',
       contentType: 'media',
+      // 100x RELIABLE: Include media array so image/document shows inline immediately
+      media: [{
+        type: attachment.type,
+        url: mediaUrl,
+        name: attachment.filename || displayFilename,
+        mimeType: attachment.mimeType,
+      }],
     };
     setMessages((prev) => [...prev, newMessage]);
 
     // Update conversation last message optimistically
-    const lastMsgPreview = text || `📎 ${displayFilename}`;
+    const lastMsgPreview = text || (isPhoto ? '📷 Photo' : `📎 ${displayFilename}`);
     setAllConversations((prev) =>
       prev.map((c) =>
         c.id === selectedConversation.id
