@@ -12,7 +12,7 @@ GUARANTEES:
 - No message loss (catch-up sync on startup)
 
 Author: telegram-crm-v2
-Build: v2.0-20251208 (cache bust)
+Build: v2.1-20251209 (attachments fix + duplicate prevention)
 """
 
 import os
@@ -652,9 +652,9 @@ class RealtimeListener:
                 INSERT INTO telegram_crm."Message" (
                     id, "conversationId", "contactId", source, "externalMessageId",
                     direction, "contentType", body, "sentAt", status,
-                    "hasAttachments", metadata, "createdAt"
+                    "hasAttachments", attachments, metadata, "createdAt"
                 )
-                VALUES (%s, %s, %s, 'telegram', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, 'telegram', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (source, "conversationId", "externalMessageId") DO NOTHING
             """, (
                 msg_data['id'],
@@ -667,6 +667,7 @@ class RealtimeListener:
                 msg_data['sent_at'],
                 msg_data['status'],
                 msg_data['has_attachments'],
+                Json(msg_data['attachments']) if msg_data.get('attachments') else None,
                 Json(msg_data['metadata'])
             ))
 
@@ -1009,12 +1010,13 @@ class RealtimeListener:
                 INSERT INTO telegram_crm."Message" (
                     id, "conversationId", "contactId", source, "externalMessageId",
                     direction, "contentType", body, "sentAt", status,
-                    "hasAttachments", metadata, "createdAt"
+                    "hasAttachments", attachments, metadata, "createdAt"
                 )
-                VALUES (%s, %s, %s, 'telegram', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, 'telegram', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (source, "conversationId", "externalMessageId")
                 DO UPDATE SET
                     body = EXCLUDED.body,
+                    attachments = COALESCE(EXCLUDED.attachments, telegram_crm."Message".attachments),
                     metadata = EXCLUDED.metadata
             """, (
                 msg_data['id'],
@@ -1027,6 +1029,7 @@ class RealtimeListener:
                 msg_data['sent_at'],
                 msg_data['status'],
                 msg_data['has_attachments'],
+                Json(msg_data['attachments']) if msg_data.get('attachments') else None,
                 Json(msg_data['metadata'])
             ))
 
@@ -1201,15 +1204,16 @@ class RealtimeListener:
                     INSERT INTO telegram_crm."Message" (
                         id, "conversationId", "contactId", source, "externalMessageId",
                         direction, "contentType", body, "sentAt", status,
-                        "hasAttachments", metadata, "createdAt"
+                        "hasAttachments", attachments, metadata, "createdAt"
                     )
-                    VALUES (%s, %s, %s, 'telegram', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, 'telegram', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (source, "conversationId", "externalMessageId") DO NOTHING
                 """, (
                     msg['id'], conversation_id, contact_id,
                     msg['external_message_id'], msg['direction'],
                     msg['content_type'], msg['body'], msg['sent_at'],
                     msg['status'], msg['has_attachments'],
+                    Json(msg['attachments']) if msg.get('attachments') else None,
                     Json(msg['metadata'])
                 ))
 
@@ -1305,6 +1309,53 @@ class RealtimeListener:
                 f"{message.id}-{message_date.timestamp()}".encode()
             ).hexdigest()[:24]
 
+            # Extract media/attachment info for inline display
+            attachments = None
+            has_attachments = bool(message.media)
+
+            if has_attachments:
+                files = []
+                if isinstance(message.media, MessageMediaPhoto):
+                    # Photo message - create attachment entry
+                    # For photos, Telegram stores them on their servers
+                    # We create a reference that the frontend can use
+                    files.append({
+                        'type': 'photo',
+                        'path': f'/media/telegram/photos/{message.id}.jpg',
+                        'mimeType': 'image/jpeg',
+                        'name': 'Photo',
+                    })
+                elif isinstance(message.media, MessageMediaDocument):
+                    doc = message.media.document
+                    if doc:
+                        # Get filename and mime type from document attributes
+                        filename = 'Document'
+                        mime_type = getattr(doc, 'mime_type', 'application/octet-stream')
+
+                        for attr in getattr(doc, 'attributes', []):
+                            if hasattr(attr, 'file_name'):
+                                filename = attr.file_name
+                                break
+
+                        # Determine type based on mime
+                        file_type = 'document'
+                        if mime_type.startswith('image/'):
+                            file_type = 'photo'
+                        elif mime_type.startswith('video/'):
+                            file_type = 'video'
+                        elif mime_type.startswith('audio/'):
+                            file_type = 'audio'
+
+                        files.append({
+                            'type': file_type,
+                            'path': f'/media/telegram/documents/{message.id}_{filename}',
+                            'mimeType': mime_type,
+                            'name': filename,
+                        })
+
+                if files:
+                    attachments = {'files': files}
+
             return {
                 'id': msg_id,
                 'external_message_id': str(message.id),
@@ -1313,7 +1364,8 @@ class RealtimeListener:
                 'body': message.message or '',
                 'sent_at': message_date,
                 'status': 'sent' if is_outgoing else 'received',
-                'has_attachments': bool(message.media),
+                'has_attachments': has_attachments,
+                'attachments': attachments,
                 'sender_telegram_id': sender_telegram_id,
                 'metadata': {
                     'sender': {
@@ -1953,6 +2005,9 @@ class RealtimeListener:
         """
         Actually send a message to Telegram.
 
+        RELIABILITY GUARANTEE: Once a message is sent to Telegram, it NEVER gets
+        re-queued for retry. This prevents duplicate messages.
+
         Handles text messages and all attachment types:
         - photo: client.send_file with is_photo=True
         - document: client.send_file
@@ -1960,6 +2015,9 @@ class RealtimeListener:
         - audio: client.send_file with audio attributes
         - voice: client.send_file with voice=True
         """
+        sent_message = None  # Track if send succeeded
+        title = 'Unknown'
+
         try:
             # Get conversation's external chat ID
             cursor = self.conn.cursor()
@@ -1985,8 +2043,6 @@ class RealtimeListener:
 
             # Prepare reply_to if specified
             reply_to = int(reply_to_msg_id) if reply_to_msg_id else None
-
-            sent_message = None
 
             # Send based on attachment type
             if attach_type and attach_url:
@@ -2059,58 +2115,110 @@ class RealtimeListener:
                     reply_to=reply_to,
                 )
 
-            # Update as sent
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                UPDATE telegram_crm."OutgoingMessage"
-                SET status = 'sent',
-                    "sentMessageId" = %s,
-                    "sentAt" = NOW(),
-                    "lockedBy" = NULL,
-                    "lockedAt" = NULL,
-                    "updatedAt" = NOW()
-                WHERE id = %s
-            """, (str(sent_message.id) if sent_message else None, msg_id))
-            self.conn.commit()
-            cursor.close()
-
-            log(f"[OUTBOX] SENT to {title}: {(text or attach_type or '')[:50]}...")
+            # MESSAGE SENT SUCCESSFULLY - Now update database
+            # Even if this fails, do NOT retry the send!
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("""
+                    UPDATE telegram_crm."OutgoingMessage"
+                    SET status = 'sent',
+                        "sentMessageId" = %s,
+                        "sentAt" = NOW(),
+                        "lockedBy" = NULL,
+                        "lockedAt" = NULL,
+                        "updatedAt" = NOW()
+                    WHERE id = %s
+                """, (str(sent_message.id) if sent_message else None, msg_id))
+                self.conn.commit()
+                cursor.close()
+                log(f"[OUTBOX] SENT to {title}: {(text or attach_type or '')[:50]}...")
+            except Exception as db_error:
+                # DB update failed but message was sent - log and mark sent anyway
+                log(f"[OUTBOX] DB update failed after send: {db_error}", "WARN")
+                try:
+                    self.conn.rollback()
+                    cursor = self.conn.cursor()
+                    cursor.execute("""
+                        UPDATE telegram_crm."OutgoingMessage"
+                        SET status = 'sent',
+                            "sentMessageId" = %s,
+                            "sentAt" = NOW(),
+                            "lockedBy" = NULL,
+                            "lockedAt" = NULL,
+                            "updatedAt" = NOW()
+                        WHERE id = %s AND status != 'sent'
+                    """, (str(sent_message.id) if sent_message else 'unknown', msg_id))
+                    self.conn.commit()
+                    cursor.close()
+                except:
+                    pass  # Best effort - message was sent, that's what matters
 
         except Exception as e:
             error_msg = str(e)
+
+            # CRITICAL: Only retry if we haven't sent the message yet!
+            if sent_message is not None:
+                # Message was sent but something else failed - mark as sent, don't retry
+                log(f"[OUTBOX] Post-send error for {msg_id} (msg sent): {error_msg}", "WARN")
+                try:
+                    cursor = self.conn.cursor()
+                    cursor.execute("""
+                        UPDATE telegram_crm."OutgoingMessage"
+                        SET status = 'sent',
+                            "sentMessageId" = %s,
+                            "sentAt" = NOW(),
+                            "lockedBy" = NULL,
+                            "lockedAt" = NULL,
+                            "updatedAt" = NOW()
+                        WHERE id = %s
+                    """, (str(sent_message.id), msg_id))
+                    self.conn.commit()
+                    cursor.close()
+                except:
+                    pass
+                return
+
+            # Message was NOT sent - safe to retry
             log(f"[OUTBOX] FAILED to send {msg_id}: {error_msg}", "ERROR")
 
             # Update as failed or retry
-            cursor = self.conn.cursor()
-            new_retry = retry_count + 1
+            try:
+                cursor = self.conn.cursor()
+                new_retry = retry_count + 1
 
-            if new_retry >= max_retries:
-                # Permanent failure
-                cursor.execute("""
-                    UPDATE telegram_crm."OutgoingMessage"
-                    SET status = 'failed',
-                        "errorMessage" = %s,
-                        "retryCount" = %s,
-                        "lockedBy" = NULL,
-                        "lockedAt" = NULL,
-                        "updatedAt" = NOW()
-                    WHERE id = %s
-                """, (error_msg[:500], new_retry, msg_id))
-            else:
-                # Back to pending for retry
-                cursor.execute("""
-                    UPDATE telegram_crm."OutgoingMessage"
-                    SET status = 'pending',
-                        "errorMessage" = %s,
-                        "retryCount" = %s,
-                        "lockedBy" = NULL,
-                        "lockedAt" = NULL,
-                        "updatedAt" = NOW()
-                    WHERE id = %s
-                """, (error_msg[:500], new_retry, msg_id))
+                if new_retry >= max_retries:
+                    # Permanent failure
+                    cursor.execute("""
+                        UPDATE telegram_crm."OutgoingMessage"
+                        SET status = 'failed',
+                            "errorMessage" = %s,
+                            "retryCount" = %s,
+                            "lockedBy" = NULL,
+                            "lockedAt" = NULL,
+                            "updatedAt" = NOW()
+                        WHERE id = %s
+                    """, (error_msg[:500], new_retry, msg_id))
+                else:
+                    # Back to pending for retry
+                    cursor.execute("""
+                        UPDATE telegram_crm."OutgoingMessage"
+                        SET status = 'pending',
+                            "errorMessage" = %s,
+                            "retryCount" = %s,
+                            "lockedBy" = NULL,
+                            "lockedAt" = NULL,
+                            "updatedAt" = NOW()
+                        WHERE id = %s
+                    """, (error_msg[:500], new_retry, msg_id))
 
-            self.conn.commit()
-            cursor.close()
+                self.conn.commit()
+                cursor.close()
+            except Exception as db_error:
+                log(f"[OUTBOX] Failed to update error status: {db_error}", "ERROR")
+                try:
+                    self.conn.rollback()
+                except:
+                    pass
 
 
 # Standalone execution for testing
