@@ -362,7 +362,10 @@ interface MessageInputWrapperProps {
 function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown, onSend, onSendWithAttachment, conversationId }: MessageInputWrapperProps) {
   const [isFocused, setIsFocused] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<{ file: File; type: string; preview?: string } | null>(null);
+  const [attachedFile, setAttachedFile] = useState<{ file: File; type: string; preview?: string; isImage?: boolean } | null>(null);
+  // TELEGRAM-STYLE: User can choose to send image as Photo (inline) or Document (with filename)
+  // Default to 'document' for CRM professional use - filenames are important for contracts, reports, etc.
+  const [sendAsPhoto, setSendAsPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAttachClick = () => {
@@ -373,19 +376,24 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Determine type
+    // Check if it's an image
+    const isImage = file.type.startsWith('image/');
+
+    // Determine type - images default to 'document' for filename preservation
+    // User can toggle to 'photo' for inline preview
     let type = 'document';
-    if (file.type.startsWith('image/')) type = 'photo';
-    else if (file.type.startsWith('video/')) type = 'video';
+    if (file.type.startsWith('video/')) type = 'video';
     else if (file.type.startsWith('audio/')) type = 'audio';
+    // Note: Images start as 'document' by default, can be toggled to 'photo'
 
     // Create preview for images
     let preview: string | undefined;
-    if (type === 'photo') {
+    if (isImage) {
       preview = URL.createObjectURL(file);
     }
 
-    setAttachedFile({ file, type, preview });
+    setAttachedFile({ file, type, preview, isImage });
+    setSendAsPhoto(false); // Default to document for new attachments
 
     // Clear input so same file can be selected again
     if (fileInputRef.current) {
@@ -408,6 +416,12 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
       // Upload file first
       const formData = new FormData();
       formData.append('file', attachedFile.file);
+      // TELEGRAM-STYLE: Pass sendAs parameter for images
+      // 'photo' = inline preview (no filename)
+      // 'document' = file with filename (default for CRM)
+      if (attachedFile.isImage) {
+        formData.append('sendAs', sendAsPhoto ? 'photo' : 'document');
+      }
 
       const uploadRes = await fetch('/api/upload', {
         method: 'POST',
@@ -421,17 +435,23 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
       const uploadData = await uploadRes.json();
 
       // Send message with attachment
+      // Use the type from the upload response (respects sendAs choice)
+      // TELEGRAM LOGIC:
+      // - For 'photo' type: DON'T send filename → sync worker sends as inline photo
+      // - For 'document' type: SEND filename → sync worker preserves it
       if (onSendWithAttachment) {
+        const shouldIncludeFilename = uploadData.file.type !== 'photo';
         onSendWithAttachment(inputValue, {
           type: uploadData.file.type,
           url: uploadData.file.storageKey,
-          filename: uploadData.file.filename,
+          filename: shouldIncludeFilename ? uploadData.file.filename : undefined,
           mimeType: uploadData.file.mimeType,
         });
       }
 
       // Clear state
       handleRemoveAttachment();
+      setSendAsPhoto(false);
     } catch (error) {
       console.error('Failed to upload file:', error);
       alert('Failed to upload file. Please try again.');
@@ -488,6 +508,46 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
               {(attachedFile.file.size / 1024).toFixed(1)} KB
             </div>
+            {/* TELEGRAM-STYLE: Photo vs File toggle for images */}
+            {attachedFile.isImage && (
+              <div style={{
+                display: 'flex',
+                gap: 'var(--space-2)',
+                marginTop: 'var(--space-1)',
+                fontSize: 'var(--text-xs)',
+              }}>
+                <button
+                  onClick={() => setSendAsPhoto(true)}
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: sendAsPhoto ? 'var(--accent-primary)' : 'var(--bg-secondary)',
+                    color: sendAsPhoto ? 'white' : 'var(--text-secondary)',
+                    fontWeight: sendAsPhoto ? '500' : '400',
+                    transition: 'all 150ms ease',
+                  }}
+                >
+                  📷 Photo
+                </button>
+                <button
+                  onClick={() => setSendAsPhoto(false)}
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: !sendAsPhoto ? 'var(--accent-primary)' : 'var(--bg-secondary)',
+                    color: !sendAsPhoto ? 'white' : 'var(--text-secondary)',
+                    fontWeight: !sendAsPhoto ? '500' : '400',
+                    transition: 'all 150ms ease',
+                  }}
+                >
+                  📄 File
+                </button>
+              </div>
+            )}
           </div>
           <button
             onClick={handleRemoveAttachment}
