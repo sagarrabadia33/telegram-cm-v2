@@ -7,9 +7,7 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Health check for Railway to monitor
-healthcheckPath = "/health"
-healthcheckTimeout = 300
+# No healthcheck - service handles its own lock management
 startCommand = "python main.py"
 
 # Restart policy

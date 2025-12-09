@@ -41,10 +41,8 @@ export async function GET(request: NextRequest) {
         type: {
           in: ['private', 'group', 'supergroup'],
         },
-        // Must have at least one message
-        messages: {
-          some: {},
-        },
+        // TELEGRAM-STYLE: Show ALL conversations including those without messages yet
+        // This ensures contacts appear in the list even before first message
         // Tag filter
         ...tagFilter,
       },
@@ -156,12 +154,13 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // 100% RELIABLE SORT: Sort by actual last message time (descending), then limit to 100
+    // 100% RELIABLE SORT: Sort by actual last message time (descending)
     // This ensures conversations are ordered exactly by their most recent message
+    // TELEGRAM-STYLE: Return ALL conversations so user can scroll to find any contact
+    // Frontend uses virtual scrolling for performance
     transformed.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-    const result = transformed.slice(0, 100);
 
-    return NextResponse.json(result);
+    return NextResponse.json(transformed);
   } catch (error) {
     console.error('Failed to fetch conversations:', error);
     return NextResponse.json(
