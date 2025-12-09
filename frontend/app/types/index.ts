@@ -35,7 +35,7 @@ export interface Message {
   readAt: string | null;
   status: string | null;
   contentType: string;
-  media?: { type: string; url: string }[] | null;
+  media?: { type: string; url: string; name?: string; mimeType?: string }[] | null;
   sender?: {
     id: string;
     name: string;

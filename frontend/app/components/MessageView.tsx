@@ -363,9 +363,6 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
   const [isFocused, setIsFocused] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [attachedFile, setAttachedFile] = useState<{ file: File; type: string; preview?: string; isImage?: boolean } | null>(null);
-  // TELEGRAM-STYLE: User can choose to send image as Photo (inline) or Document (with filename)
-  // Default to 'document' for CRM professional use - filenames are important for contracts, reports, etc.
-  const [sendAsPhoto, setSendAsPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAttachClick = () => {
@@ -393,7 +390,6 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
     }
 
     setAttachedFile({ file, type, preview, isImage });
-    setSendAsPhoto(false); // Default to document for new attachments
 
     // Clear input so same file can be selected again
     if (fileInputRef.current) {
@@ -416,12 +412,6 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
       // Upload file first
       const formData = new FormData();
       formData.append('file', attachedFile.file);
-      // TELEGRAM-STYLE: Pass sendAs parameter for images
-      // 'photo' = inline preview (no filename)
-      // 'document' = file with filename (default for CRM)
-      if (attachedFile.isImage) {
-        formData.append('sendAs', sendAsPhoto ? 'photo' : 'document');
-      }
 
       const uploadRes = await fetch('/api/upload', {
         method: 'POST',
@@ -451,7 +441,6 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
 
       // Clear state
       handleRemoveAttachment();
-      setSendAsPhoto(false);
     } catch (error) {
       console.error('Failed to upload file:', error);
       alert('Failed to upload file. Please try again.');
@@ -508,46 +497,6 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
               {(attachedFile.file.size / 1024).toFixed(1)} KB
             </div>
-            {/* TELEGRAM-STYLE: Photo vs File toggle for images */}
-            {attachedFile.isImage && (
-              <div style={{
-                display: 'flex',
-                gap: 'var(--space-2)',
-                marginTop: 'var(--space-1)',
-                fontSize: 'var(--text-xs)',
-              }}>
-                <button
-                  onClick={() => setSendAsPhoto(true)}
-                  style={{
-                    padding: '2px 8px',
-                    borderRadius: 'var(--radius-sm)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    background: sendAsPhoto ? 'var(--accent-primary)' : 'var(--bg-secondary)',
-                    color: sendAsPhoto ? 'white' : 'var(--text-secondary)',
-                    fontWeight: sendAsPhoto ? '500' : '400',
-                    transition: 'all 150ms ease',
-                  }}
-                >
-                  📷 Photo
-                </button>
-                <button
-                  onClick={() => setSendAsPhoto(false)}
-                  style={{
-                    padding: '2px 8px',
-                    borderRadius: 'var(--radius-sm)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    background: !sendAsPhoto ? 'var(--accent-primary)' : 'var(--bg-secondary)',
-                    color: !sendAsPhoto ? 'white' : 'var(--text-secondary)',
-                    fontWeight: !sendAsPhoto ? '500' : '400',
-                    transition: 'all 150ms ease',
-                  }}
-                >
-                  📄 File
-                </button>
-              </div>
-            )}
           </div>
           <button
             onClick={handleRemoveAttachment}
@@ -834,38 +783,45 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
             </div>
           )}
 
-        {/* Media attachments (images) */}
-        {hasMedia && message.media!.map((item, index) => (
-          <div key={index} style={{ marginBottom: text ? 'var(--space-2)' : 0 }}>
-            {item.type === 'photos' && !imageError ? (
-              <img
-                src={item.url}
-                alt="Attachment"
-                onError={() => setImageError(true)}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '300px',
-                  borderRadius: text ? '0' : 'var(--radius-lg)',
-                  display: 'block',
-                }}
-              />
-            ) : (
-              <div style={{
-                padding: 'var(--space-3)',
-                background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
-                borderRadius: 'var(--radius-md)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-              }}>
-                <AttachmentIcon style={{ width: '20px', height: '20px', color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }} />
-                <span style={{ fontSize: 'var(--text-sm)', color: isSent ? 'rgba(255,255,255,0.9)' : 'var(--text-secondary)' }}>
-                  {item.type === 'photos' ? 'Photo' : item.type === 'documents' ? 'Document' : item.type === 'videos' ? 'Video' : item.type}
-                </span>
-              </div>
-            )}
-          </div>
-        ))}
+        {/* Media attachments (images/documents) */}
+        {hasMedia && message.media!.map((item, index) => {
+          // Determine if this is an image that should be displayed inline
+          // Check: type is photo/photos OR mimeType starts with image/
+          const isImage = item.type === 'photos' || item.type === 'photo' ||
+                          (item.mimeType && item.mimeType.startsWith('image/'));
+
+          return (
+            <div key={index} style={{ marginBottom: text ? 'var(--space-2)' : 0 }}>
+              {isImage && !imageError ? (
+                <img
+                  src={item.url}
+                  alt="Attachment"
+                  onError={() => setImageError(true)}
+                  style={{
+                    maxWidth: '100%',
+                    maxHeight: '300px',
+                    borderRadius: text ? '0' : 'var(--radius-lg)',
+                    display: 'block',
+                  }}
+                />
+              ) : (
+                <div style={{
+                  padding: 'var(--space-3)',
+                  background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
+                  borderRadius: 'var(--radius-md)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                }}>
+                  <AttachmentIcon style={{ width: '20px', height: '20px', color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }} />
+                  <span style={{ fontSize: 'var(--text-sm)', color: isSent ? 'rgba(255,255,255,0.9)' : 'var(--text-secondary)' }}>
+                    {item.name || (item.type === 'photos' || item.type === 'photo' ? 'Photo' : item.type === 'documents' || item.type === 'document' ? 'Document' : item.type === 'videos' || item.type === 'video' ? 'Video' : 'Attachment')}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {/* Show placeholder for messages with hasAttachments but no media data (not yet downloaded) */}
         {!hasMedia && message.contentType === 'media' && (

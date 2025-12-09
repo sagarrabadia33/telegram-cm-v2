@@ -38,17 +38,11 @@ import { randomUUID } from 'crypto';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB (Telegram limit)
 
 // Determine Telegram attachment type from MIME
-// TELEGRAM ARCHITECTURE DECISION:
-// - 'photo' = compressed inline image, NO FILENAME preserved (but shows inline preview)
-// - 'document' = original file with filename preserved (shows as attachment)
-// User can choose how to send images via sendAs parameter
-function getAttachmentType(mimeType: string, sendAs?: string): string {
-  if (mimeType.startsWith('image/')) {
-    // USER CHOICE: If sendAs='photo', send as inline image (no filename)
-    // If sendAs='document' or not specified, send as document (preserves filename)
-    if (sendAs === 'photo') return 'photo';
-    return 'document'; // Default: preserve filename for CRM professional use
-  }
+// TELEGRAM-STYLE: Images always sent as 'photo' for inline display
+// Documents/other files sent as 'document' with filename preserved
+function getAttachmentType(mimeType: string): string {
+  // Images: Always send as photo for inline preview (Telegram-style)
+  if (mimeType.startsWith('image/')) return 'photo';
   if (mimeType.startsWith('video/')) return 'video';
   if (mimeType.startsWith('audio/')) return 'audio';
   if (mimeType === 'audio/ogg') return 'voice';
@@ -59,8 +53,6 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
-    // TELEGRAM-STYLE: User can choose to send image as 'photo' (inline) or 'document' (with filename)
-    const sendAs = formData.get('sendAs') as string | null;
 
     if (!file) {
       return NextResponse.json(
@@ -101,7 +93,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const attachmentType = getAttachmentType(file.type, sendAs || undefined);
+    const attachmentType = getAttachmentType(file.type);
 
     return NextResponse.json({
       success: true,
