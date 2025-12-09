@@ -458,10 +458,32 @@ export default function Home() {
   // Handle "Open Chat" from contact detail - switch to messages view
   const handleOpenChat = useCallback((contactId: string) => {
     setViewMode('messages');
+    // Close the contact panel
+    setIsContactPanelOpen(false);
+
     // Find the corresponding conversation
     const conversation = allConversations.find(c => c.id === contactId);
     if (conversation) {
       setSelectedConversation(conversation);
+    } else {
+      // Fetch conversation if not in current list (might be filtered out by tags)
+      fetch(`/api/conversations/${contactId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.id) {
+            setSelectedConversation(data);
+            // Also add to conversations list if not present
+            setAllConversations((prev) => {
+              if (!prev.find((c) => c.id === data.id)) {
+                return [data, ...prev];
+              }
+              return prev;
+            });
+          }
+        })
+        .catch((error) => {
+          console.error('Failed to fetch conversation:', error);
+        });
     }
   }, [allConversations]);
 
