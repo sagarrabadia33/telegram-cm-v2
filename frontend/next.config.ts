@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Mark pdf-parse as external to prevent worker bundling issues
+  serverExternalPackages: ["pdf-parse"],
 };
 
 export default nextConfig;

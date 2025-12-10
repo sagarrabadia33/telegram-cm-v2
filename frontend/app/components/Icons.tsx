@@ -159,3 +159,76 @@ export function DownloadIcon({ className = "w-4 h-4", style }: IconProps) {
     </svg>
   );
 }
+
+// Note type icons for timeline
+export function NoteIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 2.5C2 1.67 2.67 1 3.5 1H10.5C11.33 1 12 1.67 12 2.5V13.5C12 14.33 11.33 15 10.5 15H3.5C2.67 15 2 14.33 2 13.5V2.5Z" />
+      <path d="M4.5 4H9.5" />
+      <path d="M4.5 7H9.5" />
+      <path d="M4.5 10H7" />
+    </svg>
+  );
+}
+
+export function MeetingIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1" y="2" width="14" height="12" rx="2" />
+      <path d="M1 6h14" />
+      <path d="M5 2v2" />
+      <path d="M11 2v2" />
+      <path d="M4 9h2v2H4z" />
+    </svg>
+  );
+}
+
+export function CallIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.5 11.5v2a1.5 1.5 0 01-1.64 1.49 14.88 14.88 0 01-6.49-2.31 14.67 14.67 0 01-4.51-4.51A14.88 14.88 0 01.55 1.64 1.5 1.5 0 012.04.5h2a1.5 1.5 0 011.5 1.29 9.67 9.67 0 00.53 2.12 1.5 1.5 0 01-.34 1.58l-.85.85a12 12 0 004.51 4.51l.85-.85a1.5 1.5 0 011.58-.34 9.67 9.67 0 002.12.53 1.5 1.5 0 011.29 1.5v.81z" />
+    </svg>
+  );
+}
+
+export function FileNoteIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 1H4a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V6L9 1z" />
+      <path d="M9 1v5h5" />
+    </svg>
+  );
+}
+
+export function PlusIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+export function TrashIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 011.34-1.34h2.66a1.33 1.33 0 011.34 1.34V4m2 0v9.33a1.33 1.33 0 01-1.34 1.34H4.67a1.33 1.33 0 01-1.34-1.34V4h9.34z" />
+    </svg>
+  );
+}
+
+export function ChevronDownIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6l4 4 4-4" />
+    </svg>
+  );
+}
+
+export function CloseIcon({ className = "w-4 h-4", style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}

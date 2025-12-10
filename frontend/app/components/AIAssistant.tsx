@@ -1,11 +1,15 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Conversation } from '../types';
+import NotesTimeline from './NotesTimeline';
 
 interface AIAssistantProps {
   conversation: Conversation | null;
 }
+
+// Tab types
+type TabType = 'ai' | 'notes';
 
 // Intelligent suggestion prompts based on conversation context
 interface SuggestionPrompt {
@@ -177,13 +181,20 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+// Store chat history per conversation (persists across navigation within session)
+const chatHistoryCache = new Map<string, {
+  messages: ChatMessage[];
+  deepAnalysis: boolean;
+  contextInfo: { messagesUsed: number; totalMessages: number } | null;
+}>();
+
+// Store active tab per conversation
+const activeTabCache = new Map<string, TabType>();
+
 export default function AIAssistant({ conversation }: AIAssistantProps) {
-  // Notes state
-  const [notes, setNotes] = useState('');
-  const [notesLoading, setNotesLoading] = useState(false);
-  const [notesSaving, setNotesSaving] = useState(false);
-  const [notesExpanded, setNotesExpanded] = useState(true);
-  const notesTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Tab state - default to AI, but remember per conversation
+  const [activeTab, setActiveTab] = useState<TabType>('ai');
+  const [notesCount, setNotesCount] = useState(0);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -200,72 +211,115 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
     totalMessages: number;
   } | null>(null);
 
-  // Load notes when conversation changes
+  // Tooltip state
+  const [hoveredTab, setHoveredTab] = useState<TabType | null>(null);
+
+  // Track previous conversation to save state before switching
+  const prevConversationIdRef = useRef<string | null>(null);
+
+  // Save current chat state to cache when conversation changes
   useEffect(() => {
-    if (conversation?.id) {
-      loadNotes(conversation.id);
-      // Reset chat and deep analysis when conversation changes
-      setChatMessages([]);
-      setDeepAnalysis(false);
-      setContextInfo(null);
+    // Save previous conversation's state
+    if (prevConversationIdRef.current && prevConversationIdRef.current !== conversation?.id) {
+      const prevId = prevConversationIdRef.current;
+      // Save chat state
+      if (chatMessages.length > 0) {
+        chatHistoryCache.set(prevId, {
+          messages: chatMessages,
+          deepAnalysis,
+          contextInfo,
+        });
+      }
+      // Save active tab
+      activeTabCache.set(prevId, activeTab);
     }
+
+    // Load or reset state for new conversation
+    if (conversation?.id) {
+      // Load chat state
+      const cached = chatHistoryCache.get(conversation.id);
+      if (cached) {
+        setChatMessages(cached.messages);
+        setDeepAnalysis(cached.deepAnalysis);
+        setContextInfo(cached.contextInfo);
+      } else {
+        setChatMessages([]);
+        setDeepAnalysis(false);
+        setContextInfo(null);
+      }
+
+      // Load active tab (default to AI for new conversations)
+      const cachedTab = activeTabCache.get(conversation.id);
+      setActiveTab(cachedTab || 'ai');
+
+      // Reset notes count immediately, then fetch actual count
+      setNotesCount(0);
+    }
+
+    // Update ref for next change
+    prevConversationIdRef.current = conversation?.id || null;
   }, [conversation?.id]);
 
-  // Auto-save notes with debounce
+  // Fetch notes count when conversation changes (independent of active tab)
   useEffect(() => {
-    if (notesTimeoutRef.current) {
-      clearTimeout(notesTimeoutRef.current);
-    }
+    if (!conversation?.id) return;
 
-    if (conversation?.id && notes !== undefined) {
-      notesTimeoutRef.current = setTimeout(() => {
-        saveNotes(conversation.id, notes);
-      }, 1000);
-    }
-
-    return () => {
-      if (notesTimeoutRef.current) {
-        clearTimeout(notesTimeoutRef.current);
+    const fetchNotesCount = async () => {
+      try {
+        const response = await fetch(`/api/conversations/${conversation.id}/notes`);
+        const data = await response.json();
+        if (data.success) {
+          setNotesCount(data.data.notes?.length || 0);
+        }
+      } catch (error) {
+        console.error('Failed to fetch notes count:', error);
       }
     };
-  }, [notes, conversation?.id]);
+
+    fetchNotesCount();
+  }, [conversation?.id]);
 
   // Scroll to bottom when new chat messages arrive
   useEffect(() => {
-    if (chatContainerRef.current) {
+    if (chatContainerRef.current && activeTab === 'ai') {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [chatMessages]);
+  }, [chatMessages, activeTab]);
 
-  const loadNotes = async (conversationId: string) => {
-    setNotesLoading(true);
-    try {
-      const response = await fetch(`/api/conversations/${conversationId}/notes`);
-      const data = await response.json();
-      if (data.success) {
-        setNotes(data.data.notes || '');
+  // Keyboard shortcuts for tabs
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if typing in input
+      if (document.activeElement === chatInputRef.current) {
+        // Only handle / shortcut to focus
+        if (e.key === 'Escape') {
+          chatInputRef.current?.blur();
+        }
+        return;
       }
-    } catch (error) {
-      console.error('Failed to load notes:', error);
-    } finally {
-      setNotesLoading(false);
-    }
-  };
 
-  const saveNotes = async (conversationId: string, notesContent: string) => {
-    setNotesSaving(true);
-    try {
-      await fetch(`/api/conversations/${conversationId}/notes`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notes: notesContent }),
-      });
-    } catch (error) {
-      console.error('Failed to save notes:', error);
-    } finally {
-      setNotesSaving(false);
-    }
-  };
+      // Tab switching: 1 for AI, 2 for Notes
+      if (e.key === '1' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setActiveTab('ai');
+        if (conversation?.id) activeTabCache.set(conversation.id, 'ai');
+      }
+      if (e.key === '2' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setActiveTab('notes');
+        if (conversation?.id) activeTabCache.set(conversation.id, 'notes');
+      }
+
+      // / to focus chat input (only when on AI tab)
+      if (e.key === '/' && !e.metaKey && !e.ctrlKey && activeTab === 'ai') {
+        e.preventDefault();
+        chatInputRef.current?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab, conversation?.id]);
 
   const handleChatSubmit = async () => {
     if (!chatInput.trim() || !conversation?.id || chatLoading) return;
@@ -336,403 +390,466 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
     }
   };
 
-  // Keyboard shortcut
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (document.activeElement === chatInputRef.current) return;
-
-      if (e.key === '/' && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        chatInputRef.current?.focus();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  // Handle tab change
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab);
+    if (conversation?.id) {
+      activeTabCache.set(conversation.id, tab);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
-      {/* Header */}
+      {/* Header with Tabs - Linear style */}
       <div style={{
-        padding: 'var(--space-3) var(--space-4)',
         borderBottom: '1px solid var(--border-subtle)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <div style={{
-            width: '24px',
-            height: '24px',
-            borderRadius: 'var(--radius-md)',
-            background: 'linear-gradient(135deg, var(--accent-primary) 0%, #8B5CF6 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}>
-            <SparklesIcon style={{ width: '14px', height: '14px', color: 'white' }} />
-          </div>
-          <span style={{
-            fontSize: 'var(--text-sm)',
-            fontWeight: 'var(--font-semibold)',
-            color: 'var(--text-primary)',
-          }}>
-            AI Assistant
-          </span>
-        </div>
-        <kbd style={{
-          fontSize: '10px',
-          padding: '2px 5px',
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: 'var(--radius-sm)',
-          color: 'var(--text-quaternary)',
-          fontFamily: 'var(--font-mono)',
-        }}>
-          /
-        </kbd>
-      </div>
-
-      {/* Scrollable Content */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-        {/* Notes Section */}
-        <div style={{
-          borderBottom: '1px solid var(--border-subtle)',
-        }}>
-          <button
-            onClick={() => setNotesExpanded(!notesExpanded)}
-            style={{
-              width: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: 'var(--space-3) var(--space-4)',
-              background: 'var(--bg-secondary)',
-              border: 'none',
-              cursor: 'pointer',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-              <NotesIcon style={{ width: '14px', height: '14px', color: 'var(--text-tertiary)' }} />
-              <span style={{
-                fontSize: 'var(--text-sm)',
-                fontWeight: 'var(--font-medium)',
-                color: 'var(--text-secondary)',
-              }}>
-                Context Notes
-              </span>
-              {notesSaving && (
-                <span style={{
-                  fontSize: '10px',
-                  color: 'var(--text-quaternary)',
-                  fontStyle: 'italic',
-                }}>
-                  Saving...
-                </span>
-              )}
-              {notes && !notesSaving && (
-                <span style={{
-                  fontSize: '10px',
-                  padding: '1px 6px',
-                  background: 'var(--accent-subtle)',
-                  color: 'var(--accent-primary)',
-                  borderRadius: 'var(--radius-full)',
-                }}>
-                  Has notes
-                </span>
-              )}
-            </div>
-            <ChevronIcon style={{
-              width: '14px',
-              height: '14px',
-              color: 'var(--text-quaternary)',
-              transform: notesExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
-              transition: 'transform 200ms ease',
-            }} />
-          </button>
-
-          {notesExpanded && (
-            <div style={{ padding: 'var(--space-3) var(--space-4)' }}>
-              {notesLoading ? (
-                <div style={{
-                  height: '80px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}>
-                  <LoadingSpinner size={16} />
-                </div>
-              ) : (
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Add background context"
-                  style={{
-                    width: '100%',
-                    minHeight: '80px',
-                    padding: 'var(--space-3)',
-                    fontSize: 'var(--text-sm)',
-                    color: 'var(--text-primary)',
-                    background: 'var(--bg-primary)',
-                    border: '1px solid var(--border-default)',
-                    borderRadius: 'var(--radius-md)',
-                    resize: 'vertical',
-                    outline: 'none',
-                    fontFamily: 'var(--font-sans)',
-                    lineHeight: '1.5',
-                  }}
-                  onFocus={(e) => {
-                    e.target.style.borderColor = 'var(--accent-primary)';
-                    e.target.style.boxShadow = '0 0 0 3px var(--accent-subtle)';
-                  }}
-                  onBlur={(e) => {
-                    e.target.style.borderColor = 'var(--border-default)';
-                    e.target.style.boxShadow = 'none';
-                  }}
-                />
-              )}
-              <p style={{
-                fontSize: '11px',
-                color: 'var(--text-quaternary)',
-                marginTop: 'var(--space-2)',
-                margin: 'var(--space-2) 0 0 0',
-              }}>
-                Notes are automatically saved and used as AI context
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Chat Messages */}
-        <div
-          ref={chatContainerRef}
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: 'var(--space-4)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 'var(--space-3)',
-          }}
-        >
-          {chatMessages.length === 0 ? (
-            <EmptyState
-              conversation={conversation}
-              onSuggestionClick={(text) => {
-                setChatInput(text);
-                chatInputRef.current?.focus();
-                // Auto-submit the suggestion
-                setTimeout(() => {
-                  const userMessage: ChatMessage = {
-                    id: `user-${Date.now()}`,
-                    role: 'user',
-                    content: text,
-                    timestamp: new Date(),
-                  };
-                  setChatMessages(prev => [...prev, userMessage]);
-                  setChatInput('');
-                  setChatLoading(true);
-
-                  // Submit the message
-                  fetch(`/api/conversations/${conversation?.id}/chat`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      message: text,
-                      chatHistory: [],
-                      deepAnalysis,
-                    }),
-                  })
-                    .then(res => res.json())
-                    .then(data => {
-                      if (data.success) {
-                        // Update context info
-                        if (data.data.context) {
-                          setContextInfo({
-                            messagesUsed: data.data.context.messagesUsed,
-                            totalMessages: data.data.context.totalMessages,
-                          });
-                        }
-
-                        const assistantMessage: ChatMessage = {
-                          id: `assistant-${Date.now()}`,
-                          role: 'assistant',
-                          content: data.data.response,
-                          timestamp: new Date(),
-                        };
-                        setChatMessages(prev => [...prev, assistantMessage]);
-                      } else {
-                        const errorMessage: ChatMessage = {
-                          id: `error-${Date.now()}`,
-                          role: 'assistant',
-                          content: `Error: ${data.error || 'Failed to get response'}`,
-                          timestamp: new Date(),
-                        };
-                        setChatMessages(prev => [...prev, errorMessage]);
-                      }
-                    })
-                    .catch(() => {
-                      const errorMessage: ChatMessage = {
-                        id: `error-${Date.now()}`,
-                        role: 'assistant',
-                        content: 'Failed to connect to AI service. Please try again.',
-                        timestamp: new Date(),
-                      };
-                      setChatMessages(prev => [...prev, errorMessage]);
-                    })
-                    .finally(() => {
-                      setChatLoading(false);
-                    });
-                }, 0);
-              }}
-            />
-          ) : (
-            chatMessages.map((message) => (
-              <ChatBubble key={message.id} message={message} />
-            ))
-          )}
-          {chatLoading && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-2)',
-              padding: 'var(--space-3)',
-              background: 'var(--bg-secondary)',
-              borderRadius: 'var(--radius-lg)',
-              alignSelf: 'flex-start',
-              maxWidth: '85%',
-            }}>
-              <LoadingSpinner size={14} />
-              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-                Thinking...
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Chat Input */}
-      <div style={{
-        padding: 'var(--space-3) var(--space-4)',
-        borderTop: '1px solid var(--border-subtle)',
-        background: 'var(--bg-secondary)',
-      }}>
+        {/* Tab Bar */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 'var(--space-2)',
-          padding: '0 var(--space-3)',
-          height: '40px',
-          background: 'var(--bg-primary)',
-          border: `1px solid ${isChatFocused ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-          borderRadius: 'var(--radius-md)',
-          transition: 'all 150ms ease',
-          boxShadow: isChatFocused ? '0 0 0 3px var(--accent-subtle)' : 'none',
+          padding: '0 12px',
+          gap: '2px',
         }}>
-          <SparklesIcon style={{
-            width: '14px',
-            height: '14px',
-            color: isChatFocused ? 'var(--accent-primary)' : 'var(--text-quaternary)',
-            flexShrink: 0,
-            transition: 'color 150ms ease',
-          }} />
-          <input
-            ref={chatInputRef}
-            type="text"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleChatSubmit();
-              }
-              if (e.key === 'Escape') {
-                setChatInput('');
-                chatInputRef.current?.blur();
-              }
-            }}
-            onFocus={() => setIsChatFocused(true)}
-            onBlur={() => setIsChatFocused(false)}
-            placeholder="Ask about this conversation..."
-            disabled={chatLoading || !conversation}
-            style={{
-              flex: 1,
-              border: 'none',
-              background: 'transparent',
-              fontSize: 'var(--text-sm)',
-              color: 'var(--text-primary)',
-              outline: 'none',
-              fontFamily: 'var(--font-sans)',
-            }}
-          />
-          {chatInput && (
+          {/* AI Tab */}
+          <TabButton
+            isActive={activeTab === 'ai'}
+            onClick={() => handleTabChange('ai')}
+            onMouseEnter={() => setHoveredTab('ai')}
+            onMouseLeave={() => setHoveredTab(null)}
+            shortcut="1"
+          >
+            <SparklesIcon style={{ width: '14px', height: '14px' }} />
+            <span>AI Assistant</span>
+          </TabButton>
+
+          {/* Notes Tab */}
+          <div style={{ position: 'relative' }}>
+            <TabButton
+              isActive={activeTab === 'notes'}
+              onClick={() => handleTabChange('notes')}
+              onMouseEnter={() => setHoveredTab('notes')}
+              onMouseLeave={() => setHoveredTab(null)}
+              shortcut="2"
+              badge={notesCount > 0 ? notesCount : undefined}
+            >
+              <NotesIcon style={{ width: '14px', height: '14px' }} />
+              <span>Notes</span>
+            </TabButton>
+
+            {/* Notes tooltip */}
+            {hoveredTab === 'notes' && (
+              <Tooltip>
+                Track context over time with notes, meeting summaries, and file attachments. AI uses notes for context.
+              </Tooltip>
+            )}
+          </div>
+
+          {/* Spacer */}
+          <div style={{ flex: 1 }} />
+
+          {/* Keyboard hint */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            paddingRight: '4px',
+          }}>
             <kbd style={{
               fontSize: '10px',
               padding: '2px 5px',
               background: 'var(--bg-tertiary)',
               border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-sm)',
+              borderRadius: '4px',
               color: 'var(--text-quaternary)',
               fontFamily: 'var(--font-mono)',
             }}>
-              ↵
+              {activeTab === 'ai' ? '/' : 'N'}
             </kbd>
-          )}
-        </div>
-        {/* Context info and controls */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginTop: 'var(--space-2)',
-          gap: 'var(--space-2)',
-        }}>
-          {/* Left: Context indicator */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flex: 1 }}>
-            <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
-              {contextInfo ? (
-                contextInfo.messagesUsed < contextInfo.totalMessages
-                  ? `Using ${contextInfo.messagesUsed} of ${contextInfo.totalMessages} messages`
-                  : `Using all ${contextInfo.totalMessages} messages`
-              ) : (
-                'Context: messages + notes'
-              )}
-            </span>
-          </div>
-
-          {/* Right: Deep Analysis toggle + Clear */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-            {/* Deep Analysis toggle - only show for larger conversations */}
-            {(conversation?.totalMessages || 0) > 50 && (
-              <DeepAnalysisToggle
-                enabled={deepAnalysis}
-                onToggle={() => setDeepAnalysis(!deepAnalysis)}
-                totalMessages={conversation?.totalMessages || 0}
-              />
-            )}
-
-            {chatMessages.length > 0 && (
-              <button
-                onClick={() => {
-                  setChatMessages([]);
-                  setContextInfo(null);
-                }}
-                style={{
-                  fontSize: '11px',
-                  color: 'var(--text-tertiary)',
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  textDecoration: 'underline',
-                }}
-              >
-                Clear
-              </button>
-            )}
           </div>
         </div>
       </div>
+
+      {/* Tab Content */}
+      {activeTab === 'ai' ? (
+        // AI Assistant Tab Content
+        <>
+          {/* Chat Messages */}
+          <div
+            ref={chatContainerRef}
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: 'var(--space-4)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-3)',
+            }}
+          >
+            {chatMessages.length === 0 ? (
+              <EmptyState
+                conversation={conversation}
+                onSuggestionClick={(text) => {
+                  setChatInput(text);
+                  chatInputRef.current?.focus();
+                  // Auto-submit the suggestion
+                  setTimeout(() => {
+                    const userMessage: ChatMessage = {
+                      id: `user-${Date.now()}`,
+                      role: 'user',
+                      content: text,
+                      timestamp: new Date(),
+                    };
+                    setChatMessages(prev => [...prev, userMessage]);
+                    setChatInput('');
+                    setChatLoading(true);
+
+                    // Submit the message
+                    fetch(`/api/conversations/${conversation?.id}/chat`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        message: text,
+                        chatHistory: [],
+                        deepAnalysis,
+                      }),
+                    })
+                      .then(res => res.json())
+                      .then(data => {
+                        if (data.success) {
+                          // Update context info
+                          if (data.data.context) {
+                            setContextInfo({
+                              messagesUsed: data.data.context.messagesUsed,
+                              totalMessages: data.data.context.totalMessages,
+                            });
+                          }
+
+                          const assistantMessage: ChatMessage = {
+                            id: `assistant-${Date.now()}`,
+                            role: 'assistant',
+                            content: data.data.response,
+                            timestamp: new Date(),
+                          };
+                          setChatMessages(prev => [...prev, assistantMessage]);
+                        } else {
+                          const errorMessage: ChatMessage = {
+                            id: `error-${Date.now()}`,
+                            role: 'assistant',
+                            content: `Error: ${data.error || 'Failed to get response'}`,
+                            timestamp: new Date(),
+                          };
+                          setChatMessages(prev => [...prev, errorMessage]);
+                        }
+                      })
+                      .catch(() => {
+                        const errorMessage: ChatMessage = {
+                          id: `error-${Date.now()}`,
+                          role: 'assistant',
+                          content: 'Failed to connect to AI service. Please try again.',
+                          timestamp: new Date(),
+                        };
+                        setChatMessages(prev => [...prev, errorMessage]);
+                      })
+                      .finally(() => {
+                        setChatLoading(false);
+                      });
+                  }, 0);
+                }}
+                notesCount={notesCount}
+                onViewNotes={() => handleTabChange('notes')}
+              />
+            ) : (
+              chatMessages.map((message) => (
+                <ChatBubble key={message.id} message={message} />
+              ))
+            )}
+            {chatLoading && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+                padding: 'var(--space-3)',
+                background: 'var(--bg-secondary)',
+                borderRadius: 'var(--radius-lg)',
+                alignSelf: 'flex-start',
+                maxWidth: '85%',
+              }}>
+                <LoadingSpinner size={14} />
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+                  Thinking...
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Chat Input */}
+          <div style={{
+            padding: 'var(--space-3) var(--space-4)',
+            borderTop: '1px solid var(--border-subtle)',
+            background: 'var(--bg-secondary)',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              padding: '0 var(--space-3)',
+              height: '40px',
+              background: 'var(--bg-primary)',
+              border: `1px solid ${isChatFocused ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+              borderRadius: 'var(--radius-md)',
+              transition: 'all 150ms ease',
+              boxShadow: isChatFocused ? '0 0 0 3px var(--accent-subtle)' : 'none',
+            }}>
+              <SparklesIcon style={{
+                width: '14px',
+                height: '14px',
+                color: isChatFocused ? 'var(--accent-primary)' : 'var(--text-quaternary)',
+                flexShrink: 0,
+                transition: 'color 150ms ease',
+              }} />
+              <input
+                ref={chatInputRef}
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChatSubmit();
+                  }
+                  if (e.key === 'Escape') {
+                    setChatInput('');
+                    chatInputRef.current?.blur();
+                  }
+                }}
+                onFocus={() => setIsChatFocused(true)}
+                onBlur={() => setIsChatFocused(false)}
+                placeholder="Ask about this conversation..."
+                disabled={chatLoading || !conversation}
+                style={{
+                  flex: 1,
+                  border: 'none',
+                  background: 'transparent',
+                  fontSize: 'var(--text-sm)',
+                  color: 'var(--text-primary)',
+                  outline: 'none',
+                  fontFamily: 'var(--font-sans)',
+                }}
+              />
+              {chatInput && (
+                <kbd style={{
+                  fontSize: '10px',
+                  padding: '2px 5px',
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--text-quaternary)',
+                  fontFamily: 'var(--font-mono)',
+                }}>
+                  ↵
+                </kbd>
+              )}
+            </div>
+            {/* Context info and controls */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginTop: 'var(--space-2)',
+              gap: 'var(--space-2)',
+            }}>
+              {/* Left: Context indicator */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flex: 1 }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
+                  {contextInfo ? (
+                    contextInfo.messagesUsed < contextInfo.totalMessages
+                      ? `Using ${contextInfo.messagesUsed} of ${contextInfo.totalMessages} messages`
+                      : `Using all ${contextInfo.totalMessages} messages`
+                  ) : (
+                    <>
+                      Context: messages
+                      {notesCount > 0 && (
+                        <> + <span style={{ color: 'var(--accent-primary)' }}>{notesCount} notes</span></>
+                      )}
+                    </>
+                  )}
+                </span>
+              </div>
+
+              {/* Right: Deep Analysis toggle + Clear */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                {/* Deep Analysis toggle - only show for larger conversations */}
+                {(conversation?.totalMessages || 0) > 50 && (
+                  <DeepAnalysisToggle
+                    enabled={deepAnalysis}
+                    onToggle={() => setDeepAnalysis(!deepAnalysis)}
+                    totalMessages={conversation?.totalMessages || 0}
+                  />
+                )}
+
+                {chatMessages.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setChatMessages([]);
+                      setContextInfo(null);
+                      // Also clear from cache so it doesn't restore on re-navigation
+                      if (conversation?.id) {
+                        chatHistoryCache.delete(conversation.id);
+                      }
+                    }}
+                    style={{
+                      fontSize: '11px',
+                      color: 'var(--text-tertiary)',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        // Notes Tab Content - Full height NotesTimeline
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {conversation && (
+            <NotesTimeline
+              conversationId={conversation.id}
+              isExpanded={true}
+              onToggleExpanded={() => {}}
+              onNotesCountChange={setNotesCount}
+              fullHeight={true}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// Tab Button Component - Linear Style
+// ============================================
+function TabButton({
+  isActive,
+  onClick,
+  onMouseEnter,
+  onMouseLeave,
+  children,
+  shortcut,
+  badge,
+}: {
+  isActive: boolean;
+  onClick: () => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
+  children: React.ReactNode;
+  shortcut?: string;
+  badge?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '10px 12px',
+        fontSize: '13px',
+        fontWeight: isActive ? '600' : '500',
+        color: isActive ? 'var(--text-primary)' : 'var(--text-tertiary)',
+        background: 'transparent',
+        border: 'none',
+        borderBottom: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent',
+        cursor: 'pointer',
+        transition: 'all 100ms ease',
+        marginBottom: '-1px',
+        position: 'relative',
+      }}
+    >
+      {children}
+      {badge !== undefined && badge > 0 ? (
+        // Show badge when there's data - hide keyboard shortcut to avoid confusion
+        <span style={{
+          fontSize: '10px',
+          fontWeight: '600',
+          color: 'var(--accent-primary)',
+          background: 'var(--accent-subtle)',
+          padding: '1px 5px',
+          borderRadius: '10px',
+          minWidth: '16px',
+          textAlign: 'center',
+        }}>
+          {badge}
+        </span>
+      ) : (
+        // Show keyboard shortcut only when no badge and not active
+        shortcut && !isActive && (
+          <kbd style={{
+            fontSize: '9px',
+            padding: '1px 4px',
+            background: 'var(--bg-tertiary)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '3px',
+            color: 'var(--text-quaternary)',
+            fontFamily: 'var(--font-mono)',
+            marginLeft: '2px',
+          }}>
+            {shortcut}
+          </kbd>
+        )
+      )}
+    </button>
+  );
+}
+
+// ============================================
+// Tooltip Component - Linear Style
+// ============================================
+function Tooltip({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: '100%',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        marginTop: '8px',
+        padding: '10px 12px',
+        background: 'var(--bg-primary)',
+        border: '1px solid var(--border-default)',
+        borderRadius: '8px',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+        width: '220px',
+        zIndex: 100,
+        fontSize: '12px',
+        color: 'var(--text-secondary)',
+        lineHeight: '1.4',
+      }}
+    >
+      {children}
+      {/* Arrow */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '-6px',
+          left: '50%',
+          transform: 'translateX(-50%) rotate(45deg)',
+          width: '10px',
+          height: '10px',
+          background: 'var(--bg-primary)',
+          border: '1px solid var(--border-default)',
+          borderBottom: 'none',
+          borderRight: 'none',
+        }}
+      />
     </div>
   );
 }
@@ -763,11 +880,11 @@ function DeepAnalysisToggle({
           gap: '4px',
           padding: '3px 8px',
           fontSize: '10px',
-          fontWeight: 'var(--font-medium)',
+          fontWeight: '500',
           color: enabled ? 'var(--accent-primary)' : 'var(--text-tertiary)',
           background: enabled ? 'var(--accent-subtle)' : 'transparent',
           border: `1px solid ${enabled ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-          borderRadius: 'var(--radius-full)',
+          borderRadius: '12px',
           cursor: 'pointer',
           transition: 'all 150ms ease',
         }}
@@ -794,10 +911,10 @@ function DeepAnalysisToggle({
             bottom: '100%',
             right: 0,
             marginBottom: '8px',
-            padding: 'var(--space-3)',
+            padding: '10px 12px',
             background: 'var(--bg-primary)',
             border: '1px solid var(--border-default)',
-            borderRadius: 'var(--radius-md)',
+            borderRadius: '8px',
             boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
             width: '220px',
             zIndex: 100,
@@ -805,7 +922,7 @@ function DeepAnalysisToggle({
         >
           <div style={{
             fontSize: '11px',
-            fontWeight: 'var(--font-semibold)',
+            fontWeight: '600',
             color: 'var(--text-primary)',
             marginBottom: '6px',
           }}>
@@ -822,8 +939,8 @@ function DeepAnalysisToggle({
               </>
             ) : (
               <>
-                <span style={{ fontWeight: 'var(--font-medium)' }}>Standard:</span> Last 50 messages<br />
-                <span style={{ fontWeight: 'var(--font-medium)' }}>Deep Analysis:</span> Up to 500 messages
+                <span style={{ fontWeight: '500' }}>Standard:</span> Last 50 messages<br />
+                <span style={{ fontWeight: '500' }}>Deep Analysis:</span> Up to 500 messages
               </>
             )}
           </div>
@@ -863,41 +980,97 @@ function DeepAnalysisToggle({
 function ChatBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
 
+  if (isUser) {
+    // User message - right aligned, darker background, no icon needed
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        maxWidth: '85%',
+        alignSelf: 'flex-end',
+      }}>
+        <div style={{
+          padding: '10px 12px',
+          background: 'var(--bg-tertiary)',
+          color: 'var(--text-primary)',
+          borderRadius: '12px',
+          borderBottomRightRadius: '4px',
+          border: '1px solid var(--border-default)',
+        }}>
+          <p style={{
+            margin: 0,
+            fontSize: '13px',
+            lineHeight: '1.5',
+            whiteSpace: 'pre-wrap',
+          }}>
+            {message.content}
+          </p>
+        </div>
+        <span style={{
+          fontSize: '10px',
+          color: 'var(--text-quaternary)',
+          marginTop: '4px',
+          paddingRight: '4px',
+        }}>
+          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+    );
+  }
+
+  // AI message - left aligned with avatar icon
   return (
     <div style={{
       display: 'flex',
-      flexDirection: 'column',
-      alignItems: isUser ? 'flex-end' : 'flex-start',
-      maxWidth: '85%',
-      alignSelf: isUser ? 'flex-end' : 'flex-start',
+      gap: '8px',
+      maxWidth: '90%',
+      alignSelf: 'flex-start',
     }}>
+      {/* AI Avatar */}
       <div style={{
-        padding: 'var(--space-3)',
-        background: isUser ? 'var(--accent-primary)' : 'var(--bg-secondary)',
-        color: isUser ? 'white' : 'var(--text-primary)',
-        borderRadius: 'var(--radius-lg)',
-        borderBottomRightRadius: isUser ? 'var(--radius-sm)' : 'var(--radius-lg)',
-        borderBottomLeftRadius: isUser ? 'var(--radius-lg)' : 'var(--radius-sm)',
-        border: isUser ? 'none' : '1px solid var(--border-subtle)',
+        width: '24px',
+        height: '24px',
+        borderRadius: '6px',
+        background: 'linear-gradient(135deg, var(--accent-primary) 0%, #8B5CF6 100%)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        marginTop: '2px',
       }}>
-        <p style={{
-          margin: 0,
-          fontSize: 'var(--text-sm)',
-          lineHeight: '1.5',
-          whiteSpace: 'pre-wrap',
-        }}>
-          {message.content}
-        </p>
+        <SparklesIcon style={{ width: '12px', height: '12px', color: 'white' }} />
       </div>
-      <span style={{
-        fontSize: '10px',
-        color: 'var(--text-quaternary)',
-        marginTop: 'var(--space-1)',
-        paddingLeft: isUser ? '0' : 'var(--space-2)',
-        paddingRight: isUser ? 'var(--space-2)' : '0',
-      }}>
-        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </span>
+
+      {/* Message content */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          padding: '10px 12px',
+          background: 'var(--bg-secondary)',
+          color: 'var(--text-primary)',
+          borderRadius: '12px',
+          borderTopLeftRadius: '4px',
+          border: '1px solid var(--border-subtle)',
+        }}>
+          <p style={{
+            margin: 0,
+            fontSize: '13px',
+            lineHeight: '1.6',
+            whiteSpace: 'pre-wrap',
+          }}>
+            {message.content}
+          </p>
+        </div>
+        <span style={{
+          fontSize: '10px',
+          color: 'var(--text-quaternary)',
+          marginTop: '4px',
+          paddingLeft: '4px',
+          display: 'block',
+        }}>
+          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
     </div>
   );
 }
@@ -907,10 +1080,14 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 // ============================================
 function EmptyState({
   conversation,
-  onSuggestionClick
+  onSuggestionClick,
+  notesCount,
+  onViewNotes,
 }: {
   conversation: Conversation | null;
   onSuggestionClick: (text: string) => void;
+  notesCount: number;
+  onViewNotes: () => void;
 }) {
   const suggestions = getContextualSuggestions(conversation);
 
@@ -941,52 +1118,52 @@ function EmptyState({
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      padding: 'var(--space-6) var(--space-4)',
+      padding: '32px 16px',
       textAlign: 'center',
       flex: 1,
     }}>
       <div style={{
         width: '44px',
         height: '44px',
-        borderRadius: 'var(--radius-lg)',
+        borderRadius: '12px',
         background: 'linear-gradient(135deg, var(--accent-subtle) 0%, rgba(139, 92, 246, 0.1) 100%)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        marginBottom: 'var(--space-3)',
+        marginBottom: '12px',
       }}>
         <SparklesIcon style={{ width: '22px', height: '22px', color: 'var(--accent-primary)' }} />
       </div>
 
       <p style={{
-        fontSize: 'var(--text-sm)',
+        fontSize: '14px',
         color: 'var(--text-secondary)',
-        margin: '0 0 var(--space-1) 0',
-        fontWeight: 'var(--font-medium)',
+        margin: '0 0 4px 0',
+        fontWeight: '500',
       }}>
         Ask AI about this conversation
       </p>
 
       <p style={{
-        fontSize: 'var(--text-xs)',
+        fontSize: '12px',
         color: 'var(--text-quaternary)',
         margin: 0,
-        maxWidth: '200px',
+        maxWidth: '220px',
         lineHeight: '1.4',
       }}>
-        Get insights, prepare for calls, or understand context from your message history and notes
+        Get insights from messages{notesCount > 0 ? ` and ${notesCount} notes` : ''}
       </p>
 
       {/* Context label - shows what the suggestions are tailored for */}
       {contextLabel && (
         <div style={{
-          marginTop: 'var(--space-3)',
+          marginTop: '12px',
           display: 'flex',
           alignItems: 'center',
           gap: '6px',
           padding: '4px 10px',
           background: 'var(--bg-secondary)',
-          borderRadius: 'var(--radius-full)',
+          borderRadius: '16px',
           border: '1px solid var(--border-subtle)',
         }}>
           <div style={{
@@ -998,7 +1175,7 @@ function EmptyState({
           <span style={{
             fontSize: '10px',
             color: 'var(--text-tertiary)',
-            fontWeight: 'var(--font-medium)',
+            fontWeight: '500',
           }}>
             Tailored for {contextLabel.name}
           </span>
@@ -1007,10 +1184,10 @@ function EmptyState({
 
       {/* Suggestion chips */}
       <div style={{
-        marginTop: 'var(--space-4)',
+        marginTop: '16px',
         display: 'flex',
         flexDirection: 'column',
-        gap: 'var(--space-2)',
+        gap: '8px',
         width: '100%',
         maxWidth: '260px',
       }}>
@@ -1023,6 +1200,28 @@ function EmptyState({
           />
         ))}
       </div>
+
+      {/* Notes hint if no notes */}
+      {notesCount === 0 && (
+        <button
+          onClick={onViewNotes}
+          style={{
+            marginTop: '20px',
+            fontSize: '11px',
+            color: 'var(--text-tertiary)',
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}
+        >
+          <NotesIcon style={{ width: '12px', height: '12px' }} />
+          <span>Add notes for richer AI context</span>
+          <span style={{ color: 'var(--text-quaternary)' }}>→</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -1047,7 +1246,7 @@ function SuggestionChip({
       width: '12px',
       height: '12px',
       color: isHovered ? 'var(--accent-primary)' : 'var(--text-quaternary)',
-      flexShrink: 0,
+      flexShrink: 0 as const,
       transition: 'color 150ms ease',
     };
 
@@ -1093,11 +1292,11 @@ function SuggestionChip({
         alignItems: 'center',
         gap: '8px',
         padding: '10px 12px',
-        fontSize: 'var(--text-xs)',
+        fontSize: '12px',
         color: isHovered ? 'var(--text-secondary)' : 'var(--text-tertiary)',
         background: isHovered ? 'var(--bg-hover)' : 'var(--bg-secondary)',
         border: `1px solid ${isHovered ? 'var(--border-default)' : 'var(--border-subtle)'}`,
-        borderRadius: 'var(--radius-md)',
+        borderRadius: '8px',
         cursor: 'pointer',
         textAlign: 'left',
         transition: 'all 150ms ease',
@@ -1184,29 +1383,15 @@ function SparklesIcon({ style }: { style?: React.CSSProperties }) {
 
 function NotesIcon({ style }: { style?: React.CSSProperties }) {
   return (
-    <svg style={style} viewBox="0 0 14 14" fill="none">
+    <svg style={style} viewBox="0 0 16 16" fill="none">
       <path
-        d="M2 2.5C2 1.67 2.67 1 3.5 1H10.5C11.33 1 12 1.67 12 2.5V11.5C12 12.33 11.33 13 10.5 13H3.5C2.67 13 2 12.33 2 11.5V2.5Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-      />
-      <path d="M4.5 4H9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      <path d="M4.5 6.5H9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      <path d="M4.5 9H7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ChevronIcon({ style }: { style?: React.CSSProperties }) {
-  return (
-    <svg style={style} viewBox="0 0 14 14" fill="none">
-      <path
-        d="M3.5 5.5L7 9L10.5 5.5"
+        d="M3 3C3 2.44772 3.44772 2 4 2H12C12.5523 2 13 2.44772 13 3V13C13 13.5523 12.5523 14 12 14H4C3.44772 14 3 13.5523 3 13V3Z"
         stroke="currentColor"
         strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
       />
+      <path d="M5.5 5H10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M5.5 8H10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M5.5 11H8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }
