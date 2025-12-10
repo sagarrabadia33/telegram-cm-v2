@@ -406,8 +406,23 @@ export default function ConversationsList({
         )}
       </div>
 
-      {/* Conversations List */}
+      {/* Conversations List - with smooth staggered animation */}
       <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-2)' }}>
+        <style>{`
+          @keyframes conversationSlideIn {
+            from {
+              opacity: 0;
+              transform: translateX(-8px);
+            }
+            to {
+              opacity: 1;
+              transform: translateX(0);
+            }
+          }
+          .conversation-item-animated {
+            animation: conversationSlideIn 200ms ease-out forwards;
+          }
+        `}</style>
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center" style={{ padding: 'var(--space-4)' }}>
             <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
@@ -415,14 +430,21 @@ export default function ConversationsList({
             </p>
           </div>
         ) : (
-          filtered.map((conversation) => (
-            <ConversationItem
+          filtered.map((conversation, index) => (
+            <div
               key={conversation.id}
-              conversation={conversation}
-              isSelected={conversation.id === selectedId}
-              onClick={() => onSelect(conversation)}
-              onMarkAsUnread={onMarkAsUnread}
-            />
+              className="conversation-item-animated"
+              style={{
+                animationDelay: `${Math.min(index * 20, 200)}ms`, // Cap at 200ms total
+              }}
+            >
+              <ConversationItem
+                conversation={conversation}
+                isSelected={conversation.id === selectedId}
+                onClick={() => onSelect(conversation)}
+                onMarkAsUnread={onMarkAsUnread}
+              />
+            </div>
           ))
         )}
       </div>

@@ -276,7 +276,29 @@ export default function MessageView({
         />
       </div>
 
-      {/* Messages */}
+      {/* Messages - with smooth animations */}
+      <style>{`
+        @keyframes messageSlideIn {
+          from {
+            opacity: 0;
+            transform: translateY(8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .message-animated {
+          animation: messageSlideIn 150ms ease-out forwards;
+        }
+        @keyframes messagePulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.3); }
+          50% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1); }
+        }
+        .message-highlighted {
+          animation: messagePulse 1s ease-in-out 2;
+        }
+      `}</style>
       <div style={{
         flex: 1,
         overflowY: 'auto',

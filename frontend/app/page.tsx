@@ -7,9 +7,36 @@ import ContactSlidePanel from './components/ContactSlidePanel';
 import MessageView from './components/MessageView';
 import AIAssistant from './components/AIAssistant';
 import SearchModal from './components/SearchModal';
+import { PageSkeleton, MessagesListSkeleton } from './components/Skeleton';
 import { Conversation, Message, MessagesResponse } from './types';
 import { useSync, ConversationSyncResult, GlobalSyncResult } from './contexts/SyncContext';
 import { useRealtimeUpdates } from './hooks/useRealtimeUpdates';
+
+// ============================================
+// Performance: Message Cache for instant switching
+// ============================================
+const messageCache = new Map<string, { messages: Message[]; timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+
+function getCachedMessages(conversationId: string): Message[] | null {
+  const cached = messageCache.get(conversationId);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.messages;
+  }
+  return null;
+}
+
+function setCachedMessages(conversationId: string, messages: Message[]) {
+  messageCache.set(conversationId, { messages, timestamp: Date.now() });
+}
+
+function updateCachedMessages(conversationId: string, updater: (msgs: Message[]) => Message[]) {
+  const cached = messageCache.get(conversationId);
+  if (cached) {
+    cached.messages = updater(cached.messages);
+    cached.timestamp = Date.now();
+  }
+}
 
 interface Tag {
   id: string;
@@ -314,15 +341,35 @@ export default function Home() {
     [allConversations]
   );
 
-  // Fetch messages - showLoading=false for sync refreshes to avoid unmounting MessageView
+  // Fetch messages with caching for instant conversation switching
   const fetchMessages = useCallback(async (conversationId: string, showLoading = true) => {
+    // Check cache first for instant display
+    const cachedMessages = getCachedMessages(conversationId);
+    if (cachedMessages) {
+      // Instantly show cached messages (no loading state!)
+      setMessages(cachedMessages);
+      // Refresh in background for freshness
+      fetch(`/api/conversations/${conversationId}/messages`)
+        .then(res => res.json())
+        .then((data: MessagesResponse) => {
+          const freshMessages = data.messages || [];
+          setCachedMessages(conversationId, freshMessages);
+          setMessages(freshMessages);
+        })
+        .catch(console.error);
+      return;
+    }
+
+    // No cache - show loading and fetch
     if (showLoading) {
       setMessagesLoading(true);
     }
     try {
       const response = await fetch(`/api/conversations/${conversationId}/messages`);
       const data: MessagesResponse = await response.json();
-      setMessages(data.messages || []);
+      const msgs = data.messages || [];
+      setCachedMessages(conversationId, msgs);
+      setMessages(msgs);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
       setMessages([]);
@@ -581,6 +628,9 @@ export default function Home() {
     };
     setMessages((prev) => [...prev, newMessage]);
 
+    // Also update cache for instant persistence
+    updateCachedMessages(selectedConversation.id, (msgs) => [...msgs, newMessage]);
+
     // Update conversation last message optimistically
     setAllConversations((prev) =>
       prev.map((c) =>
@@ -659,6 +709,9 @@ export default function Home() {
     };
     setMessages((prev) => [...prev, newMessage]);
 
+    // Also update cache for instant persistence
+    updateCachedMessages(selectedConversation.id, (msgs) => [...msgs, newMessage]);
+
     // Update conversation last message optimistically
     const lastMsgPreview = text || (isPhoto ? '📷 Photo' : `📎 ${displayFilename}`);
     setAllConversations((prev) =>
@@ -728,26 +781,9 @@ export default function Home() {
     }
   };
 
+  // Show skeleton while initial data loads (much better UX than spinner)
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen" style={{ background: 'var(--bg-primary)' }}>
-        <div className="flex flex-col items-center" style={{ gap: 'var(--space-4)' }}>
-          <div
-            className="animate-spin"
-            style={{
-              width: '32px',
-              height: '32px',
-              border: '2px solid var(--accent-primary)',
-              borderTopColor: 'transparent',
-              borderRadius: 'var(--radius-full)',
-            }}
-          />
-          <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-            Loading...
-          </p>
-        </div>
-      </div>
-    );
+    return <PageSkeleton />;
   }
 
   // Contacts view: full-width table with slide-out panel
@@ -1029,17 +1065,23 @@ export default function Home() {
         )}
         {messagesLoading ? (
           <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)', flex: 1 }}>
-            <div className="flex-1 flex items-center justify-center">
-              <div
-                className="animate-spin"
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  border: '2px solid var(--accent-primary)',
-                  borderTopColor: 'transparent',
-                  borderRadius: 'var(--radius-full)',
-                }}
-              />
+            {/* Header skeleton */}
+            <div style={{
+              padding: '16px',
+              borderBottom: '1px solid var(--border-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}>
+              <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--bg-tertiary)' }} />
+              <div>
+                <div style={{ width: 150, height: 16, borderRadius: 4, background: 'var(--bg-tertiary)', marginBottom: 4 }} />
+                <div style={{ width: 80, height: 12, borderRadius: 4, background: 'var(--bg-tertiary)' }} />
+              </div>
+            </div>
+            {/* Messages skeleton */}
+            <div style={{ flex: 1 }}>
+              <MessagesListSkeleton count={6} />
             </div>
           </div>
         ) : (
