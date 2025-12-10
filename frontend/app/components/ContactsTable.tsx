@@ -110,7 +110,11 @@ interface QuickFilterCounts {
   untagged: number;
   highVolume: number;
   newThisWeek: number;
+  needFollowUp?: number;
 }
+
+// Import QuickFilterType from SmartFilterSection
+import type { QuickFilterType } from './SmartFilterSection';
 
 interface ContactsTableProps {
   contacts: Contact[];
@@ -130,6 +134,9 @@ interface ContactsTableProps {
   onLoadMore?: () => void;
   onSearch?: (search: string) => void;
   isSearching?: boolean; // Subtle indicator during search (no skeleton)
+  // Server-side quick filter support
+  onQuickFilterChange?: (filterType: QuickFilterType | null) => void;
+  activeQuickFilter?: QuickFilterType | null;
 }
 
 export default function ContactsTable({
@@ -149,6 +156,8 @@ export default function ContactsTable({
   onLoadMore,
   onSearch,
   isSearching = false,
+  onQuickFilterChange,
+  activeQuickFilter,
 }: ContactsTableProps) {
   const isMobile = useIsMobile();
   const [search, setSearch] = useState('');
@@ -952,6 +961,8 @@ export default function ContactsTable({
               onToggleExpand={() => setIsSmartFilterExpanded(true)}
               externalClearSignal={filterClearSignal}
               serverQuickFilterCounts={quickFilterCounts}
+              onQuickFilterChange={onQuickFilterChange}
+              activeServerQuickFilter={activeQuickFilter}
             />
           )}
           {/* Search - with subtle loading indicator */}
@@ -1035,6 +1046,8 @@ export default function ContactsTable({
             isExpanded={isSmartFilterExpanded}
             onToggleExpand={() => setIsSmartFilterExpanded(false)}
             serverQuickFilterCounts={quickFilterCounts}
+            onQuickFilterChange={onQuickFilterChange}
+            activeServerQuickFilter={activeQuickFilter}
           />
         </div>
       )}

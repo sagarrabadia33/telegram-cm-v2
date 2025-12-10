@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { track } from '@/app/lib/analytics/client';
 
 interface SearchResult {
   id: string;
@@ -66,6 +67,8 @@ export default function SearchModal({
       setResults([]);
       setSelectedIndex(0);
       setPage(1);
+      // Track search opened
+      track('search_opened', {});
     }
   }, [isOpen]);
 
@@ -92,6 +95,12 @@ export default function SearchModal({
         setPage(data.data.page);
         setTotalPages(data.data.totalPages);
         setSelectedIndex(0);
+        // Track search performed
+        track('search_performed', {
+          query: searchQuery,
+          resultCount: data.data.total,
+          durationMs: data.data.took,
+        });
       }
     } catch (error) {
       console.error('Search error:', error);

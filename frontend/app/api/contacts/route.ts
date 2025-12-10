@@ -9,6 +9,7 @@ import { prisma } from '@/app/lib/prisma';
  * - filtering by type: all, private (people), group, supergroup, channel
  * - pagination: limit (default 50), cursor (for infinite scroll)
  * - search: server-side search on name, username, phone
+ * - quickFilter: server-side smart filters (active7d, active30d, untagged, highVolume, newThisWeek, needFollowUp)
  */
 export async function GET(request: NextRequest) {
   try {
@@ -17,6 +18,7 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     const cursor = searchParams.get('cursor');
     const search = searchParams.get('search')?.toLowerCase().trim();
+    const quickFilter = searchParams.get('quickFilter'); // Server-side quick filter
 
     // Build type filter
     const typeWhere = typeFilter === 'all'
@@ -37,6 +39,62 @@ export async function GET(request: NextRequest) {
       ],
     } : {};
 
+    // Calculate date cutoffs for quick filters
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    // Build quick filter where clause (server-side filtering)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let quickFilterWhere: any = {};
+    let needsMessageCount = false; // For highVolume filter
+    let needsFollowUpFilter = false; // For needFollowUp filter
+
+    if (quickFilter) {
+      switch (quickFilter) {
+        case 'active7d':
+          quickFilterWhere = {
+            lastMessageAt: { gte: sevenDaysAgo },
+            messages: { some: {} }, // has at least one message
+          };
+          break;
+        case 'active30d':
+          quickFilterWhere = {
+            lastMessageAt: { gte: thirtyDaysAgo },
+            messages: { some: {} },
+          };
+          break;
+        case 'untagged':
+          quickFilterWhere = {
+            tags: { none: {} },
+          };
+          break;
+        case 'highVolume':
+          // Special handling - need to filter after fetching
+          needsMessageCount = true;
+          break;
+        case 'newThisWeek':
+          quickFilterWhere = {
+            createdAt: { gte: sevenDaysAgo },
+          };
+          break;
+        case 'needFollowUp':
+          // Complex filter - handled post-fetch
+          needsFollowUpFilter = true;
+          quickFilterWhere = {
+            lastMessageAt: { lte: sevenDaysAgo }, // No activity in 7+ days
+            messages: { some: {} }, // Has messages
+          };
+          break;
+        case 'noReply':
+          // They sent messages but we haven't replied - handled post-fetch
+          quickFilterWhere = {
+            messages: { some: {} },
+          };
+          break;
+      }
+    }
+
     // Get total count for the type filter (for tabs - exclude search from count)
     const totalCountPromise = prisma.conversation.count({
       where: {
@@ -55,10 +113,6 @@ export async function GET(request: NextRequest) {
 
     // DYNAMIC SMART FILTER COUNTS: Calculate quick filter counts from the TOTAL database
     // These are accurate counts for all contacts, not just the current page
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
     const quickFilterCountsPromise = Promise.all([
       // Active in 7 days (has messages + lastMessageAt within 7 days)
       prisma.conversation.count({
@@ -101,14 +155,25 @@ export async function GET(request: NextRequest) {
           createdAt: { gte: sevenDaysAgo },
         },
       }),
+      // Need follow-up: inactive for 7+ days, has messages, received more than sent
+      prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) as count FROM "Conversation" c
+        WHERE c."isSyncDisabled" = false
+        AND c.type IN ('private', 'group', 'supergroup', 'channel')
+        AND c."lastMessageAt" <= ${sevenDaysAgo}
+        AND (SELECT COUNT(*) FROM "Message" m WHERE m."conversationId" = c.id) > 0
+        AND (SELECT COUNT(*) FROM "Message" m WHERE m."conversationId" = c.id AND m.direction = 'inbound') >
+            (SELECT COUNT(*) FROM "Message" m WHERE m."conversationId" = c.id AND m.direction = 'outbound')
+      `,
     ]);
 
-    // Fetch conversations with all needed data
+    // Fetch conversations with all needed data (including quickFilter)
     const conversations = await prisma.conversation.findMany({
       where: {
         isSyncDisabled: false,
         ...typeWhere,
         ...searchWhere,
+        ...quickFilterWhere,
       },
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       take: limit + 1, // Fetch one extra to check if there are more
@@ -275,6 +340,24 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    // Post-fetch filtering for complex filters (highVolume, noReply, needFollowUp)
+    let finalTransformed = transformed;
+
+    if (needsMessageCount && quickFilter === 'highVolume') {
+      // Filter for contacts with 50+ messages
+      finalTransformed = transformed.filter(c => c.totalMessages >= 50);
+    }
+
+    if (quickFilter === 'noReply') {
+      // They sent messages (inbound > 0) but we haven't sent any (outbound = 0)
+      finalTransformed = transformed.filter(c => c.messagesReceived > 0 && c.messagesSent === 0);
+    }
+
+    if (needsFollowUpFilter && quickFilter === 'needFollowUp') {
+      // More received than sent AND no activity in 7+ days
+      finalTransformed = transformed.filter(c => c.messagesReceived > c.messagesSent);
+    }
+
     // Use pre-calculated counts for the filter tabs (from total DB, not just current page)
     const counts = {
       all: countResults[0],
@@ -290,11 +373,13 @@ export async function GET(request: NextRequest) {
       untagged: quickFilterResults[2],
       highVolume: Number(quickFilterResults[3][0]?.count || 0), // Convert bigint from raw query
       newThisWeek: quickFilterResults[4],
+      needFollowUp: Number(quickFilterResults[5][0]?.count || 0), // Convert bigint from raw query
     };
 
     return NextResponse.json({
-      contacts: transformed,
+      contacts: finalTransformed,
       counts,
+      activeQuickFilter: quickFilter || null,
       quickFilterCounts, // New: accurate counts for smart filters
       pagination: {
         hasMore,

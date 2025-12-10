@@ -537,3 +537,81 @@ model ConversationNote {
   @@index([createdAt(sort: Desc)])
   @@index([type])
 }
+
+// =============================================================================
+// ANALYTICS TABLES
+// =============================================================================
+
+// Immutable event log for all user interactions
+model AnalyticsEvent {
+  id            String   @id @default(cuid())
+
+  // Event identification
+  eventType     String   // e.g., "conversation_opened", "message_sent", "filter_applied"
+  eventCategory String   // "navigation", "messaging", "contacts", "search", "ai", "tags"
+
+  // Context
+  sessionId     String?  // Optional: group events by page load
+  userId        String?  // For future multi-user support
+
+  // Related entities (nullable - depends on event)
+  conversationId String?
+  contactId      String?
+  tagId          String?
+
+  // Event details
+  properties    Json?    // Flexible properties per event type
+
+  // Client info
+  deviceType    String?  // "desktop", "mobile", "tablet"
+  viewMode      String?  // "messages", "contacts"
+
+  // Timing
+  timestamp     DateTime @default(now())
+  durationMs    Int?     // For timed events (search, AI response)
+
+  @@index([eventType])
+  @@index([eventCategory])
+  @@index([sessionId])
+  @@index([timestamp])
+  @@index([conversationId])
+  @@index([contactId])
+}
+
+// Pre-aggregated daily metrics for fast dashboard queries
+model DailyMetrics {
+  id            String   @id @default(cuid())
+  date          DateTime @db.Date
+  userId        String?  // For future multi-user
+
+  // Engagement metrics
+  sessionsCount     Int @default(0)
+  totalDurationMs   Int @default(0)
+  avgSessionDurationMs Int @default(0)
+
+  // Feature usage counts
+  conversationsOpened   Int @default(0)
+  messagesSent          Int @default(0)
+  messagesReceived      Int @default(0)
+  contactsViewed        Int @default(0)
+  searchesPerformed     Int @default(0)
+  aiPromptsSubmitted    Int @default(0)
+  tagsAssigned          Int @default(0)
+  notesCreated          Int @default(0)
+  filtersApplied        Int @default(0)
+  contactsExported      Int @default(0)
+
+  // Quick filter usage
+  filterActive7d    Int @default(0)
+  filterActive30d   Int @default(0)
+  filterUntagged    Int @default(0)
+  filterHighVolume  Int @default(0)
+  filterNeedFollowUp Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([date, userId])
+  @@index([date])
+  @@index([userId])
+}

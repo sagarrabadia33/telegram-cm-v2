@@ -15,6 +15,7 @@ export type QuickFilterType =
   | 'untagged'
   | 'highVolume'
   | 'noReply'
+  | 'needFollowUp'
   | 'groupsOnly'
   | 'hasPhone';
 
@@ -24,6 +25,7 @@ const QUICK_FILTERS = [
   { key: 'untagged' as const, label: 'Untagged', description: 'Contacts with no tags' },
   { key: 'highVolume' as const, label: 'High volume', description: '50+ messages' },
   { key: 'noReply' as const, label: 'No reply', description: 'They sent messages but no reply' },
+  { key: 'needFollowUp' as const, label: 'Need follow-up', description: 'Inactive 7+ days, they sent more than you' },
 ];
 
 // AI Filter criteria returned from API
@@ -47,6 +49,7 @@ interface ServerQuickFilterCounts {
   untagged: number;
   highVolume: number;
   newThisWeek: number;
+  needFollowUp?: number;
 }
 
 interface SmartFilterSectionProps {
@@ -59,6 +62,9 @@ interface SmartFilterSectionProps {
   externalClearSignal?: number;
   // DYNAMIC: Server-calculated counts (always accurate, updated on every fetch)
   serverQuickFilterCounts?: ServerQuickFilterCounts;
+  // NEW: Server-side quick filter support
+  onQuickFilterChange?: (filterType: QuickFilterType | null) => void;
+  activeServerQuickFilter?: QuickFilterType | null;
 }
 
 export default function SmartFilterSection({
@@ -69,12 +75,14 @@ export default function SmartFilterSection({
   onToggleExpand,
   externalClearSignal,
   serverQuickFilterCounts,
+  onQuickFilterChange,
+  activeServerQuickFilter,
 }: SmartFilterSectionProps) {
   const [aiQuery, setAiQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeQuickFilter, setActiveQuickFilter] = useState<QuickFilterType | null>(null);
   const [aiFilterDescription, setAiFilterDescription] = useState<string | null>(null);
-  const [showInsights, setShowInsights] = useState(true);
+  // Insights section removed - "Need follow-up" promoted to Quick Filters for better UX
 
   // Clear filter when parent signals (e.g., when × is clicked in status bar)
   useEffect(() => {
@@ -105,102 +113,103 @@ export default function SmartFilterSection({
       ).length,
       untagged: serverQuickFilterCounts?.untagged ?? contacts.filter(c => !c.tags || c.tags.length === 0).length,
       highVolume: serverQuickFilterCounts?.highVolume ?? contacts.filter(c => c.totalMessages >= 50).length,
-      // These are client-only calculations (no server equivalent yet)
       noReply: contacts.filter(c => c.messagesReceived > 0 && c.messagesSent === 0).length,
+      // Need follow-up: inactive 7+ days and they sent more than you
+      needFollowUp: serverQuickFilterCounts?.needFollowUp ?? contacts.filter(c => {
+        if (c.messagesReceived === 0 || c.messagesSent === 0) return false;
+        const lastInteraction = new Date(c.lastInteraction);
+        const daysSinceContact = (now.getTime() - lastInteraction.getTime()) / (1000 * 60 * 60 * 24);
+        return daysSinceContact >= 7 && c.messagesReceived > c.messagesSent;
+      }).length,
       groupsOnly: contacts.filter(c => c.type === 'group' || c.type === 'supergroup').length,
       hasPhone: contacts.filter(c => c.phone !== null).length,
     };
   }, [contacts, serverQuickFilterCounts]);
 
-  // Calculate proactive insights - use server counts when available
-  const insights = useMemo(() => {
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  // Insights section removed - "Need follow-up" promoted to Quick Filters for cleaner UX
 
-    // Use server count for untagged (accurate)
-    const untagged = quickFilterCounts.untagged;
-
-    // Need follow-up: they sent last message, you didn't reply in 7+ days
-    // (client-only calculation - would need server support for accuracy)
-    const needFollowUp = contacts.filter(c => {
-      if (c.messagesReceived === 0 || c.messagesSent === 0) return false;
-      const lastInteraction = new Date(c.lastInteraction);
-      const daysSinceContact = (now.getTime() - lastInteraction.getTime()) / (1000 * 60 * 60 * 24);
-      return daysSinceContact >= 7 && c.messagesReceived > c.messagesSent;
-    }).length;
-
-    // Use server count for new this week if available
-    const newThisWeek = serverQuickFilterCounts?.newThisWeek ?? contacts.filter(c => {
-      const firstContact = new Date(c.firstContactDate);
-      return firstContact >= sevenDaysAgo;
-    }).length;
-
-    // Highly active: 100+ messages (client-only - slightly different from highVolume which is 50+)
-    const highlyActive = contacts.filter(c => c.totalMessages >= 100).length;
-
-    return { untagged, needFollowUp, newThisWeek, highlyActive };
-  }, [contacts, quickFilterCounts.untagged, serverQuickFilterCounts]);
-
-  // Apply quick filter (client-side)
+  // Apply quick filter - USE SERVER-SIDE when available for accurate results
   const applyQuickFilter = useCallback((filterType: QuickFilterType) => {
-    const now = new Date();
-    let filtered: Contact[];
-    let description: string;
+    const descriptions: Record<QuickFilterType, string> = {
+      active7d: 'Active in the last 7 days',
+      active30d: 'Active in the last 30 days',
+      untagged: 'Contacts with no tags',
+      highVolume: 'High volume (50+ messages)',
+      noReply: 'No reply sent',
+      needFollowUp: 'Need follow-up (7+ days inactive)',
+      groupsOnly: 'Groups only',
+      hasPhone: 'Has phone number',
+    };
 
-    switch (filterType) {
-      case 'active7d':
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        // Only count as "active" if they have actual message activity
-        filtered = contacts.filter(c =>
-          c.totalMessages > 0 && new Date(c.lastInteraction) >= sevenDaysAgo
-        );
-        description = 'Active in the last 7 days';
-        break;
-      case 'active30d':
-        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        // Only count as "active" if they have actual message activity
-        filtered = contacts.filter(c =>
-          c.totalMessages > 0 && new Date(c.lastInteraction) >= thirtyDaysAgo
-        );
-        description = 'Active in the last 30 days';
-        break;
-      case 'untagged':
-        filtered = contacts.filter(c => !c.tags || c.tags.length === 0);
-        description = 'Contacts with no tags';
-        break;
-      case 'highVolume':
-        filtered = contacts.filter(c => c.totalMessages >= 50);
-        description = 'High volume (50+ messages)';
-        break;
-      case 'noReply':
-        filtered = contacts.filter(c => c.messagesReceived > 0 && c.messagesSent === 0);
-        description = 'No reply sent';
-        break;
-      case 'groupsOnly':
-        filtered = contacts.filter(c => c.type === 'group' || c.type === 'supergroup');
-        description = 'Groups only';
-        break;
-      case 'hasPhone':
-        filtered = contacts.filter(c => c.phone !== null);
-        description = 'Has phone number';
-        break;
-      default:
-        filtered = contacts;
-        description = '';
-    }
+    const description = descriptions[filterType] || '';
+    const currentFilter = activeServerQuickFilter ?? activeQuickFilter;
 
-    if (activeQuickFilter === filterType) {
+    if (currentFilter === filterType) {
       // Toggle off
       setActiveQuickFilter(null);
       setAiFilterDescription(null);
-      onFilterChange(null);
+      // Use server-side if available
+      if (onQuickFilterChange) {
+        onQuickFilterChange(null);
+      } else {
+        onFilterChange(null);
+      }
     } else {
       setActiveQuickFilter(filterType);
       setAiFilterDescription(description);
       setAiQuery('');
-      onFilterChange(filtered.map(c => c.id), description);
+
+      // Use SERVER-SIDE filtering for supported filters (100x more accurate!)
+      if (onQuickFilterChange && ['active7d', 'active30d', 'untagged', 'highVolume', 'newThisWeek', 'noReply', 'needFollowUp'].includes(filterType)) {
+        onQuickFilterChange(filterType);
+      } else {
+        // Fallback to client-side for unsupported filters
+        const now = new Date();
+        let filtered: Contact[];
+
+        switch (filterType) {
+          case 'groupsOnly':
+            filtered = contacts.filter(c => c.type === 'group' || c.type === 'supergroup');
+            break;
+          case 'hasPhone':
+            filtered = contacts.filter(c => c.phone !== null);
+            break;
+          default:
+            // Client-side fallback for other filters
+            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            switch (filterType) {
+              case 'active7d':
+                filtered = contacts.filter(c => c.totalMessages > 0 && new Date(c.lastInteraction) >= sevenDaysAgo);
+                break;
+              case 'active30d':
+                filtered = contacts.filter(c => c.totalMessages > 0 && new Date(c.lastInteraction) >= thirtyDaysAgo);
+                break;
+              case 'untagged':
+                filtered = contacts.filter(c => !c.tags || c.tags.length === 0);
+                break;
+              case 'highVolume':
+                filtered = contacts.filter(c => c.totalMessages >= 50);
+                break;
+              case 'noReply':
+                filtered = contacts.filter(c => c.messagesReceived > 0 && c.messagesSent === 0);
+                break;
+              case 'needFollowUp':
+                filtered = contacts.filter(c => {
+                  if (c.messagesReceived === 0 || c.messagesSent === 0) return false;
+                  const lastInteraction = new Date(c.lastInteraction);
+                  const daysSinceContact = (now.getTime() - lastInteraction.getTime()) / (1000 * 60 * 60 * 24);
+                  return daysSinceContact >= 7 && c.messagesReceived > c.messagesSent;
+                });
+                break;
+              default:
+                filtered = contacts;
+            }
+        }
+        onFilterChange(filtered.map(c => c.id), description);
+      }
     }
-  }, [contacts, activeQuickFilter, onFilterChange]);
+  }, [contacts, activeQuickFilter, activeServerQuickFilter, onFilterChange, onQuickFilterChange]);
 
   // Apply AI filter
   const handleAiFilter = async () => {
@@ -241,35 +250,11 @@ export default function SmartFilterSection({
     setAiQuery('');
     setActiveQuickFilter(null);
     setAiFilterDescription(null);
-    onFilterChange(null);
-  };
-
-  // Handle insight click
-  const handleInsightClick = (type: 'untagged' | 'needFollowUp' | 'newThisWeek') => {
-    switch (type) {
-      case 'untagged':
-        applyQuickFilter('untagged');
-        break;
-      case 'needFollowUp':
-        // Custom filter for need follow-up
-        const now = new Date();
-        const filtered = contacts.filter(c => {
-          if (c.messagesReceived === 0 || c.messagesSent === 0) return false;
-          const lastInteraction = new Date(c.lastInteraction);
-          const daysSinceContact = (now.getTime() - lastInteraction.getTime()) / (1000 * 60 * 60 * 24);
-          return daysSinceContact >= 7 && c.messagesReceived > c.messagesSent;
-        });
-        setActiveQuickFilter(null);
-        setAiFilterDescription('Need follow-up (7+ days)');
-        onFilterChange(filtered.map(c => c.id), 'Need follow-up (7+ days)');
-        break;
-      case 'newThisWeek':
-        const sevenDaysAgo = new Date(new Date().getTime() - 7 * 24 * 60 * 60 * 1000);
-        const newContacts = contacts.filter(c => new Date(c.firstContactDate) >= sevenDaysAgo);
-        setActiveQuickFilter(null);
-        setAiFilterDescription('New this week');
-        onFilterChange(newContacts.map(c => c.id), 'New this week');
-        break;
+    // Clear server-side filter if available
+    if (onQuickFilterChange) {
+      onQuickFilterChange(null);
+    } else {
+      onFilterChange(null);
     }
   };
 
@@ -300,7 +285,7 @@ export default function SmartFilterSection({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isExpanded, onToggleExpand]);
 
-  const hasActiveFilter = activeQuickFilter !== null || aiFilterDescription !== null;
+  const hasActiveFilter = (activeServerQuickFilter ?? activeQuickFilter) !== null || aiFilterDescription !== null;
 
   return (
     <div style={{ position: 'relative' }}>
@@ -441,12 +426,15 @@ export default function SmartFilterSection({
             alignItems: 'center',
             gap: '6px',
             flexWrap: 'wrap',
+            paddingBottom: '4px', // Spacing below chips to prevent touching the line below
           }}>
             <span style={{ fontSize: '11px', color: 'var(--text-quaternary)', marginRight: '2px' }}>
               Quick:
             </span>
             {QUICK_FILTERS.map((filter) => {
               const count = quickFilterCounts[filter.key];
+              // Use server filter state if available, fall back to local state
+              const isActive = (activeServerQuickFilter ?? activeQuickFilter) === filter.key;
               return (
                 <button
                   key={filter.key}
@@ -459,20 +447,20 @@ export default function SmartFilterSection({
                     padding: '4px 10px',
                     fontSize: '11px',
                     fontWeight: 500,
-                    color: activeQuickFilter === filter.key ? 'var(--accent-primary)' : 'var(--text-tertiary)',
-                    background: activeQuickFilter === filter.key ? 'var(--accent-subtle)' : 'var(--bg-tertiary)',
-                    border: `1px solid ${activeQuickFilter === filter.key ? 'var(--accent-primary)' : 'transparent'}`,
+                    color: isActive ? 'var(--accent-primary)' : 'var(--text-tertiary)',
+                    background: isActive ? 'var(--accent-subtle)' : 'var(--bg-tertiary)',
+                    border: `1px solid ${isActive ? 'var(--accent-primary)' : 'transparent'}`,
                     borderRadius: '12px',
                     cursor: 'pointer',
                     transition: 'all 150ms ease',
                   }}
                   onMouseEnter={(e) => {
-                    if (activeQuickFilter !== filter.key) {
+                    if (!isActive) {
                       e.currentTarget.style.background = 'var(--bg-hover)';
                     }
                   }}
                   onMouseLeave={(e) => {
-                    if (activeQuickFilter !== filter.key) {
+                    if (!isActive) {
                       e.currentTarget.style.background = 'var(--bg-tertiary)';
                     }
                   }}
@@ -481,8 +469,8 @@ export default function SmartFilterSection({
                   <span style={{
                     fontSize: '10px',
                     fontWeight: 600,
-                    color: activeQuickFilter === filter.key ? 'var(--accent-primary)' : 'var(--text-quaternary)',
-                    background: activeQuickFilter === filter.key ? 'transparent' : 'var(--bg-secondary)',
+                    color: isActive ? 'var(--accent-primary)' : 'var(--text-quaternary)',
+                    background: isActive ? 'transparent' : 'var(--bg-secondary)',
                     padding: '1px 5px',
                     borderRadius: '8px',
                   }}>
@@ -514,107 +502,10 @@ export default function SmartFilterSection({
               </button>
             )}
           </div>
-
-          {/* Proactive Insights Row */}
-          {showInsights && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              paddingTop: '10px',
-              borderTop: '1px solid var(--border-subtle)',
-            }}>
-              <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
-                <ChartIcon size={12} style={{ marginRight: '4px', verticalAlign: '-2px' }} />
-                Insights:
-              </span>
-
-              {insights.untagged > 0 && (
-                <InsightBadge
-                  count={insights.untagged}
-                  label="untagged"
-                  onClick={() => handleInsightClick('untagged')}
-                />
-              )}
-
-              {insights.needFollowUp > 0 && (
-                <InsightBadge
-                  count={insights.needFollowUp}
-                  label="need follow-up"
-                  onClick={() => handleInsightClick('needFollowUp')}
-                />
-              )}
-
-              {insights.newThisWeek > 0 && (
-                <InsightBadge
-                  count={insights.newThisWeek}
-                  label="new this week"
-                  onClick={() => handleInsightClick('newThisWeek')}
-                />
-              )}
-
-              {/* Hide insights button */}
-              <button
-                onClick={() => setShowInsights(false)}
-                style={{
-                  marginLeft: 'auto',
-                  fontSize: '10px',
-                  color: 'var(--text-quaternary)',
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: '2px 4px',
-                }}
-              >
-                Hide
-              </button>
-            </div>
-          )}
+          {/* Insights section removed - "Need follow-up" now in Quick Filters for cleaner UX */}
         </div>
       )}
     </div>
-  );
-}
-
-// ============================================
-// Helper Components
-// ============================================
-
-interface InsightBadgeProps {
-  count: number;
-  label: string;
-  onClick: () => void;
-}
-
-function InsightBadge({ count, label, onClick }: InsightBadgeProps) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '4px',
-        padding: '3px 8px',
-        fontSize: '11px',
-        color: 'var(--text-secondary)',
-        background: 'var(--bg-tertiary)',
-        border: 'none',
-        borderRadius: '10px',
-        cursor: 'pointer',
-        transition: 'all 150ms ease',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = 'var(--bg-hover)';
-        e.currentTarget.style.color = 'var(--text-primary)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = 'var(--bg-tertiary)';
-        e.currentTarget.style.color = 'var(--text-secondary)';
-      }}
-    >
-      <span style={{ fontWeight: 600 }}>{count}</span>
-      <span>{label}</span>
-    </button>
   );
 }
 
@@ -683,11 +574,4 @@ function CloseIcon({ size = 16 }: { size?: number }) {
   );
 }
 
-function ChartIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={style}>
-      <path d="M14 12H2V3" />
-      <path d="M5 9l3-3 2 2 4-4" />
-    </svg>
-  );
-}
+// ChartIcon removed - Insights section removed for cleaner UX

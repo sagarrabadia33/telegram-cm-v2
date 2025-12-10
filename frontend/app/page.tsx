@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ConversationsList from './components/ConversationsList';
 import ContactsTable, { Contact } from './components/ContactsTable';
+import type { QuickFilterType } from './components/SmartFilterSection';
 import ContactSlidePanel from './components/ContactSlidePanel';
 import MessageView from './components/MessageView';
 import AIAssistant from './components/AIAssistant';
@@ -11,6 +12,7 @@ import { PageSkeleton, MessagesListSkeleton } from './components/Skeleton';
 import { Conversation, Message, MessagesResponse } from './types';
 import { useSync, ConversationSyncResult, GlobalSyncResult } from './contexts/SyncContext';
 import { useRealtimeUpdates } from './hooks/useRealtimeUpdates';
+import { track, setViewMode as setAnalyticsViewMode } from './lib/analytics/client';
 
 // ============================================
 // Performance: Message Cache for instant switching
@@ -101,6 +103,8 @@ export default function Home() {
   const [contactsSearch, setContactsSearch] = useState('');
   const [contactsSearching, setContactsSearching] = useState(false); // Subtle search indicator
   const [isContactPanelOpen, setIsContactPanelOpen] = useState(false);
+  // Server-side quick filter (active7d, active30d, untagged, etc.)
+  const [activeQuickFilter, setActiveQuickFilter] = useState<QuickFilterType | null>(null);
   // DYNAMIC QUICK FILTER COUNTS - from server, always accurate
   const [quickFilterCounts, setQuickFilterCounts] = useState({
     active7d: 0,
@@ -108,6 +112,7 @@ export default function Home() {
     untagged: 0,
     highVolume: 0,
     newThisWeek: 0,
+    needFollowUp: 0,
   });
 
   // All tags with their counts
@@ -232,17 +237,18 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch contacts for Contacts view (with pagination and search)
+  // Fetch contacts for Contacts view (with pagination, search, and quick filter)
   // WORLD-CLASS UX: Never show skeleton/loading when we already have data displayed
   const fetchContacts = useCallback(async (options?: {
     cursor?: string;
     search?: string;
     append?: boolean;
     type?: string;
+    quickFilter?: string | null; // Server-side quick filter
     isInitialLoad?: boolean; // Only show skeleton on true initial load (no data yet)
     isSearch?: boolean; // Use subtle searching indicator instead of skeleton
   }) => {
-    const { cursor, search, append = false, type, isInitialLoad = false, isSearch = false } = options || {};
+    const { cursor, search, append = false, type, quickFilter, isInitialLoad = false, isSearch = false } = options || {};
 
     // SMOOTH UX: Only show loading skeleton on true initial load (when no contacts displayed)
     // For search/filter changes, keep showing existing data until new data arrives
@@ -270,6 +276,10 @@ export default function Home() {
           'channels': 'channel',
         };
         params.set('type', typeMap[type] || type);
+      }
+      // Server-side quick filter (100x more accurate than client-side!)
+      if (quickFilter) {
+        params.set('quickFilter', quickFilter);
       }
 
       const response = await fetch(`/api/contacts?${params.toString()}`);
@@ -317,8 +327,9 @@ export default function Home() {
       search: contactsSearch,
       append: true,
       type: contactTypeFilter,
+      quickFilter: activeQuickFilter,
     });
-  }, [contactsLoadingMore, contactsHasMore, contactsNextCursor, contactsSearch, contactTypeFilter, fetchContacts]);
+  }, [contactsLoadingMore, contactsHasMore, contactsNextCursor, contactsSearch, contactTypeFilter, activeQuickFilter, fetchContacts]);
 
   // Handle contacts search (with debounce via effect)
   // SMOOTH UX: Don't clear contacts - just fetch and swap seamlessly
@@ -327,8 +338,22 @@ export default function Home() {
     // Reset cursor for new search, but DON'T clear contacts (avoid skeleton flash)
     setContactsNextCursor(null);
     // Fetch with isSearch flag - shows subtle spinner in search box
-    fetchContacts({ search, type: contactTypeFilter, isSearch: true });
-  }, [contactTypeFilter, fetchContacts]);
+    fetchContacts({ search, type: contactTypeFilter, quickFilter: activeQuickFilter, isSearch: true });
+  }, [contactTypeFilter, activeQuickFilter, fetchContacts]);
+
+  // Handle quick filter changes (server-side filtering - 100x more accurate!)
+  const handleQuickFilterChange = useCallback((filterType: QuickFilterType | null) => {
+    setActiveQuickFilter(filterType);
+    setContactsNextCursor(null);
+    // Track quick filter usage
+    if (filterType) {
+      track('quick_filter_applied', { filterType, resultCount: 0 }); // Count updated after fetch
+    } else {
+      track('quick_filter_cleared', {});
+    }
+    // Fetch filtered contacts from server - shows accurate results!
+    fetchContacts({ type: contactTypeFilter, quickFilter: filterType, search: contactsSearch });
+  }, [contactTypeFilter, contactsSearch, fetchContacts]);
 
   // Filter contacts by type
   const filteredContacts = useMemo(() => {
@@ -356,6 +381,9 @@ export default function Home() {
   useEffect(() => {
     fetchConversations(true); // Initial load - select first conversation
     fetchTags();
+    // Track page load
+    track('page_loaded', { viewMode: 'messages', loadTimeMs: performance.now() });
+    setAnalyticsViewMode('messages');
   }, [fetchConversations, fetchTags]);
 
   // Fetch contacts when switching to contacts view (initial load)
@@ -377,8 +405,9 @@ export default function Home() {
       prevContactTypeFilterRef.current = contactTypeFilter;
 
       if (viewMode === 'contacts') {
-        // Reset search when changing type filter
+        // Reset search and quick filter when changing type filter
         setContactsSearch('');
+        setActiveQuickFilter(null);
         // DON'T clear contacts - avoid skeleton flash
         setContactsNextCursor(null);
         // Fetch will replace contacts when results arrive
@@ -389,7 +418,20 @@ export default function Home() {
 
   const handleTagFilterChange = (tagIds: string[]) => {
     setSelectedTagIds(tagIds);
+    // Track tag filter change
+    if (tagIds.length > 0) {
+      track('tags_filtered', { tagCount: tagIds.length });
+    }
   };
+
+  // Handle view mode switch with analytics tracking
+  const handleViewModeSwitch = useCallback((newMode: ViewMode) => {
+    if (newMode !== viewMode) {
+      track('view_switched', { from: viewMode, to: newMode });
+      setAnalyticsViewMode(newMode);
+    }
+    setViewMode(newMode);
+  }, [viewMode]);
 
   // Global keyboard shortcut for search (Cmd+K or Ctrl+K)
   useEffect(() => {
@@ -408,7 +450,10 @@ export default function Home() {
   const handleSearchSelectConversation = useCallback(
     (conversationId: string, messageId?: string) => {
       // Switch to messages view if not already
-      setViewMode('messages');
+      handleViewModeSwitch('messages');
+
+      // Track search result click
+      track('search_result_clicked', { conversationId, position: 0 }, { conversationId });
 
       // Set the message to highlight/scroll to
       if (messageId) {
@@ -598,6 +643,14 @@ export default function Home() {
       setMobilePanel('messages');
     }
 
+    // Track conversation opened
+    track('conversation_opened', {
+      conversationId: conversation.id,
+      type: conversation.type || 'private',
+      hasUnread: conversation.unread > 0,
+      source: 'conversation_list',
+    }, { conversationId: conversation.id });
+
     // Mark conversation as read (Telegram-style)
     // Only if there are unread messages
     if (conversation.unread > 0) {
@@ -609,6 +662,9 @@ export default function Home() {
             : c
         )
       );
+
+      // Track mark as read
+      track('conversation_marked_read', { conversationId: conversation.id }, { conversationId: conversation.id });
 
       // Call mark-as-read API (fire and forget for better UX)
       fetch(`/api/conversations/${conversation.id}/mark-as-read`, {
@@ -631,6 +687,9 @@ export default function Home() {
       )
     );
 
+    // Track mark as unread
+    track('conversation_marked_unread', { conversationId }, { conversationId });
+
     // Call mark-as-unread API
     fetch(`/api/conversations/${conversationId}/mark-as-unread`, {
       method: 'POST',
@@ -650,6 +709,8 @@ export default function Home() {
   const handleSelectContact = (contact: Contact) => {
     setSelectedContact(contact);
     setIsContactPanelOpen(true);
+    // Track contact selected
+    track('contact_selected', { contactId: contact.id, type: contact.type }, { contactId: contact.id });
   };
 
   const handleCloseContactPanel = () => {
@@ -658,7 +719,7 @@ export default function Home() {
 
   // Handle "Open Chat" from contact detail - switch to messages view
   const handleOpenChat = useCallback((contactId: string) => {
-    setViewMode('messages');
+    handleViewModeSwitch('messages');
     // Close the contact panel
     setIsContactPanelOpen(false);
 
@@ -762,12 +823,22 @@ export default function Home() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+
+    // Track export
+    track('contacts_exported', { count: filteredContacts.length, format: 'csv' });
   }, [filteredContacts]);
 
   const handleSendMessage = async (text: string) => {
     if (!selectedConversation) return;
 
     const tempId = `temp-${Date.now()}`;
+
+    // Track message sent
+    track('message_sent', {
+      conversationId: selectedConversation.id,
+      hasAttachment: false,
+      contentLength: text.length,
+    }, { conversationId: selectedConversation.id });
 
     // Add optimistic message (Linear-style instant feedback)
     const newMessage: Message = {
@@ -817,6 +888,11 @@ export default function Home() {
       );
     } catch (error) {
       console.error('Failed to send message:', error);
+      // Track send failure
+      track('message_send_failed', {
+        conversationId: selectedConversation.id,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }, { conversationId: selectedConversation.id });
       // Mark as failed
       setMessages((prev) =>
         prev.map((m) =>
@@ -963,7 +1039,7 @@ export default function Home() {
             width: '180px',
           }}>
             <button
-              onClick={() => setViewMode('messages')}
+              onClick={() => handleViewModeSwitch('messages')}
               style={{
                 flex: 1,
                 padding: '6px 0',
@@ -980,7 +1056,7 @@ export default function Home() {
               Messages
             </button>
             <button
-              onClick={() => setViewMode('contacts')}
+              onClick={() => handleViewModeSwitch('contacts')}
               style={{
                 flex: 1,
                 padding: '6px 0',
@@ -1019,6 +1095,8 @@ export default function Home() {
             onLoadMore={loadMoreContacts}
             onSearch={handleContactsSearch}
             isSearching={contactsSearching}
+            onQuickFilterChange={handleQuickFilterChange}
+            activeQuickFilter={activeQuickFilter}
           />
         </div>
 
@@ -1079,7 +1157,7 @@ export default function Home() {
             label="Contacts"
             icon={<ContactsIcon />}
             active={false}
-            onClick={() => setViewMode('contacts')}
+            onClick={() => handleViewModeSwitch('contacts')}
           />
         </div>
       )}
@@ -1112,7 +1190,7 @@ export default function Home() {
               width: '180px',
             }}>
               <button
-                onClick={() => setViewMode('messages')}
+                onClick={() => handleViewModeSwitch('messages')}
                 style={{
                   flex: 1,
                   padding: '6px 0',
@@ -1130,7 +1208,7 @@ export default function Home() {
                 Messages
               </button>
               <button
-                onClick={() => setViewMode('contacts')}
+                onClick={() => handleViewModeSwitch('contacts')}
                 style={{
                   flex: 1,
                   padding: '6px 0',

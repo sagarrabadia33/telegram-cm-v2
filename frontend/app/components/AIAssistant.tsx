@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Conversation } from '../types';
 import NotesTimeline from './NotesTimeline';
+import { track } from '@/app/lib/analytics/client';
 
 interface AIAssistantProps {
   conversation: Conversation | null;
@@ -324,6 +325,13 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
   const handleChatSubmit = async () => {
     if (!chatInput.trim() || !conversation?.id || chatLoading) return;
 
+    const promptLength = chatInput.trim().length;
+
+    // Track AI prompt submitted
+    track('ai_prompt_submitted', { promptLength }, { conversationId: conversation.id });
+
+    const startTime = performance.now();
+
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -351,7 +359,12 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
 
       const data = await response.json();
 
+      const durationMs = Math.round(performance.now() - startTime);
+
       if (data.success) {
+        // Track AI response received
+        track('ai_response_received', { durationMs, success: true }, { conversationId: conversation.id });
+
         // Update context info from response
         if (data.data.context) {
           setContextInfo({
@@ -368,6 +381,9 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
         };
         setChatMessages(prev => [...prev, assistantMessage]);
       } else {
+        // Track AI response failure
+        track('ai_response_received', { durationMs, success: false }, { conversationId: conversation.id });
+
         // Show error message in chat
         const errorMessage: ChatMessage = {
           id: `error-${Date.now()}`,
