@@ -40,6 +40,15 @@ export interface FilterCriteria {
   memberCountMax?: number;
 }
 
+// Server-calculated accurate counts
+interface ServerQuickFilterCounts {
+  active7d: number;
+  active30d: number;
+  untagged: number;
+  highVolume: number;
+  newThisWeek: number;
+}
+
 interface SmartFilterSectionProps {
   contacts: Contact[];
   onFilterChange: (filteredIds: string[] | null, filterDescription?: string) => void;
@@ -48,6 +57,8 @@ interface SmartFilterSectionProps {
   onToggleExpand: () => void;
   // Parent can signal to clear filter externally (e.g., when × is clicked in status bar)
   externalClearSignal?: number;
+  // DYNAMIC: Server-calculated counts (always accurate, updated on every fetch)
+  serverQuickFilterCounts?: ServerQuickFilterCounts;
 }
 
 export default function SmartFilterSection({
@@ -57,6 +68,7 @@ export default function SmartFilterSection({
   isExpanded,
   onToggleExpand,
   externalClearSignal,
+  serverQuickFilterCounts,
 }: SmartFilterSectionProps) {
   const [aiQuery, setAiQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -75,55 +87,59 @@ export default function SmartFilterSection({
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Calculate quick filter counts (same logic as filters)
+  // DYNAMIC: Use server-calculated counts when available (always accurate)
+  // Fall back to client-side calculation for local-only filters
   const quickFilterCounts = useMemo(() => {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
+    // Use server counts if available (accurate totals from database)
+    // Fall back to client-side for display-only (less accurate but works)
     return {
-      active7d: contacts.filter(c =>
+      active7d: serverQuickFilterCounts?.active7d ?? contacts.filter(c =>
         c.totalMessages > 0 && new Date(c.lastInteraction) >= sevenDaysAgo
       ).length,
-      active30d: contacts.filter(c =>
+      active30d: serverQuickFilterCounts?.active30d ?? contacts.filter(c =>
         c.totalMessages > 0 && new Date(c.lastInteraction) >= thirtyDaysAgo
       ).length,
-      untagged: contacts.filter(c => !c.tags || c.tags.length === 0).length,
-      highVolume: contacts.filter(c => c.totalMessages >= 50).length,
+      untagged: serverQuickFilterCounts?.untagged ?? contacts.filter(c => !c.tags || c.tags.length === 0).length,
+      highVolume: serverQuickFilterCounts?.highVolume ?? contacts.filter(c => c.totalMessages >= 50).length,
+      // These are client-only calculations (no server equivalent yet)
       noReply: contacts.filter(c => c.messagesReceived > 0 && c.messagesSent === 0).length,
       groupsOnly: contacts.filter(c => c.type === 'group' || c.type === 'supergroup').length,
       hasPhone: contacts.filter(c => c.phone !== null).length,
     };
-  }, [contacts]);
+  }, [contacts, serverQuickFilterCounts]);
 
-  // Calculate proactive insights
+  // Calculate proactive insights - use server counts when available
   const insights = useMemo(() => {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
+    // Use server count for untagged (accurate)
     const untagged = quickFilterCounts.untagged;
 
     // Need follow-up: they sent last message, you didn't reply in 7+ days
+    // (client-only calculation - would need server support for accuracy)
     const needFollowUp = contacts.filter(c => {
       if (c.messagesReceived === 0 || c.messagesSent === 0) return false;
-      // Check if last message was received (not sent)
-      // For simplicity, use lastInteraction with messagesReceived > messagesSent as proxy
       const lastInteraction = new Date(c.lastInteraction);
       const daysSinceContact = (now.getTime() - lastInteraction.getTime()) / (1000 * 60 * 60 * 24);
       return daysSinceContact >= 7 && c.messagesReceived > c.messagesSent;
     }).length;
 
-    // New this week: first contact in last 7 days
-    const newThisWeek = contacts.filter(c => {
+    // Use server count for new this week if available
+    const newThisWeek = serverQuickFilterCounts?.newThisWeek ?? contacts.filter(c => {
       const firstContact = new Date(c.firstContactDate);
       return firstContact >= sevenDaysAgo;
     }).length;
 
-    // Highly active: 100+ messages
+    // Highly active: 100+ messages (client-only - slightly different from highVolume which is 50+)
     const highlyActive = contacts.filter(c => c.totalMessages >= 100).length;
 
     return { untagged, needFollowUp, newThisWeek, highlyActive };
-  }, [contacts, quickFilterCounts.untagged]);
+  }, [contacts, quickFilterCounts.untagged, serverQuickFilterCounts]);
 
   // Apply quick filter (client-side)
   const applyQuickFilter = useCallback((filterType: QuickFilterType) => {

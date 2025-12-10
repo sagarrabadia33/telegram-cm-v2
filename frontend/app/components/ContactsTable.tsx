@@ -103,12 +103,22 @@ type LastActiveFilter = typeof LAST_ACTIVE_FILTERS[number]['key'];
 type SortKey = 'name' | 'type' | 'totalMessages' | 'lastInteraction' | 'memberCount' | 'phone';
 type SortDirection = 'asc' | 'desc';
 
+// Quick filter counts from server (accurate totals)
+interface QuickFilterCounts {
+  active7d: number;
+  active30d: number;
+  untagged: number;
+  highVolume: number;
+  newThisWeek: number;
+}
+
 interface ContactsTableProps {
   contacts: Contact[];
   onSelect: (contact: Contact) => void;
   typeFilter: 'all' | 'people' | 'groups' | 'channels';
   onTypeFilterChange: (filter: 'all' | 'people' | 'groups' | 'channels') => void;
   counts: { all: number; people: number; groups: number; channels: number };
+  quickFilterCounts?: QuickFilterCounts; // Server-calculated accurate counts
   onExportCsv?: () => void;
   allTags?: Tag[];
   onTagsChange?: (contactId: string, tags: { id: string; name: string; color: string | null }[]) => void;
@@ -128,6 +138,7 @@ export default function ContactsTable({
   typeFilter,
   onTypeFilterChange,
   counts,
+  quickFilterCounts,
   onExportCsv,
   allTags = [],
   onTagsChange,
@@ -202,17 +213,26 @@ export default function ContactsTable({
     return () => observer.disconnect();
   }, [onLoadMore, hasMore, isLoadingMore, isLoading]);
 
-  // Debounced search - call onSearch if provided
+  // WORLD-CLASS SEARCH: Debounced server search with instant local filtering
+  // - Instant: Local filter shows results immediately as you type
+  // - Background: Server search runs after 400ms debounce for accurate results
+  const prevSearchRef = useRef('');
+
   useEffect(() => {
     if (!onSearch) return;
+
+    // Skip if search hasn't actually changed
+    if (prevSearchRef.current === search) return;
+    prevSearchRef.current = search;
 
     if (searchDebounceRef.current) {
       clearTimeout(searchDebounceRef.current);
     }
 
+    // Longer debounce (400ms) - local filtering handles immediate feedback
     searchDebounceRef.current = setTimeout(() => {
       onSearch(search);
-    }, 300);
+    }, 400);
 
     return () => {
       if (searchDebounceRef.current) {
@@ -931,6 +951,7 @@ export default function ContactsTable({
               isExpanded={isSmartFilterExpanded}
               onToggleExpand={() => setIsSmartFilterExpanded(true)}
               externalClearSignal={filterClearSignal}
+              serverQuickFilterCounts={quickFilterCounts}
             />
           )}
           {/* Search - with subtle loading indicator */}
@@ -1013,6 +1034,7 @@ export default function ContactsTable({
             availableTags={availableTags}
             isExpanded={isSmartFilterExpanded}
             onToggleExpand={() => setIsSmartFilterExpanded(false)}
+            serverQuickFilterCounts={quickFilterCounts}
           />
         </div>
       )}
@@ -1712,13 +1734,22 @@ export default function ContactsTable({
       {/* Mobile List View */}
       {isMobile ? (
         <div style={{ flex: 1, overflow: 'auto' }}>
-          {isLoading && sorted.length === 0 ? (
+          {/* WORLD-CLASS UX: Only show skeleton on true initial load (no data ever loaded) */}
+          {isLoading && contacts.length === 0 ? (
             <LoadingState isMobile={true} />
           ) : sorted.length === 0 ? (
             <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-              {search || selectedTagIds.length > 0 || lastActiveFilter !== 'all'
-                ? 'No contacts match your filters'
-                : 'No contacts yet'}
+              {/* Show searching state if search is active and server search pending */}
+              {isSearching ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                  <InlineSpinner />
+                  <span>Searching...</span>
+                </div>
+              ) : search || selectedTagIds.length > 0 || lastActiveFilter !== 'all' || smartFilterDescription ? (
+                'No contacts match your filters'
+              ) : (
+                'No contacts yet'
+              )}
             </div>
           ) : (
             <>
@@ -1863,7 +1894,8 @@ export default function ContactsTable({
               </tr>
             </thead>
             <tbody>
-              {isLoading && sorted.length === 0 ? (
+              {/* WORLD-CLASS UX: Only show skeleton on true initial load (no data ever loaded) */}
+              {isLoading && contacts.length === 0 ? (
                 <tr>
                   <td colSpan={10} style={{ padding: 0 }}>
                     <LoadingState isMobile={false} />
@@ -1872,9 +1904,17 @@ export default function ContactsTable({
               ) : sorted.length === 0 ? (
                 <tr>
                   <td colSpan={10} style={{ padding: '48px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                    {search || selectedTagIds.length > 0 || lastActiveFilter !== 'all'
-                      ? 'No contacts match your filters'
-                      : 'No contacts yet'}
+                    {/* Show searching state if search is active and server search pending */}
+                    {isSearching ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                        <InlineSpinner />
+                        <span>Searching...</span>
+                      </div>
+                    ) : search || selectedTagIds.length > 0 || lastActiveFilter !== 'all' || smartFilterDescription ? (
+                      'No contacts match your filters'
+                    ) : (
+                      'No contacts yet'
+                    )}
                   </td>
                 </tr>
               ) : (

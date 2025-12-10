@@ -53,6 +53,56 @@ export async function GET(request: NextRequest) {
       prisma.conversation.count({ where: { isSyncDisabled: false, type: 'channel' } }),
     ]);
 
+    // DYNAMIC SMART FILTER COUNTS: Calculate quick filter counts from the TOTAL database
+    // These are accurate counts for all contacts, not just the current page
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const quickFilterCountsPromise = Promise.all([
+      // Active in 7 days (has messages + lastMessageAt within 7 days)
+      prisma.conversation.count({
+        where: {
+          isSyncDisabled: false,
+          type: { in: ['private', 'group', 'supergroup', 'channel'] },
+          lastMessageAt: { gte: sevenDaysAgo },
+          messages: { some: {} }, // has at least one message
+        },
+      }),
+      // Active in 30 days
+      prisma.conversation.count({
+        where: {
+          isSyncDisabled: false,
+          type: { in: ['private', 'group', 'supergroup', 'channel'] },
+          lastMessageAt: { gte: thirtyDaysAgo },
+          messages: { some: {} },
+        },
+      }),
+      // Untagged (no tags assigned)
+      prisma.conversation.count({
+        where: {
+          isSyncDisabled: false,
+          type: { in: ['private', 'group', 'supergroup', 'channel'] },
+          tags: { none: {} },
+        },
+      }),
+      // High volume (50+ messages) - use having in a subquery approach
+      prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) as count FROM "Conversation" c
+        WHERE c."isSyncDisabled" = false
+        AND c.type IN ('private', 'group', 'supergroup', 'channel')
+        AND (SELECT COUNT(*) FROM "Message" m WHERE m."conversationId" = c.id) >= 50
+      `,
+      // New this week (created in last 7 days)
+      prisma.conversation.count({
+        where: {
+          isSyncDisabled: false,
+          type: { in: ['private', 'group', 'supergroup', 'channel'] },
+          createdAt: { gte: sevenDaysAgo },
+        },
+      }),
+    ]);
+
     // Fetch conversations with all needed data
     const conversations = await prisma.conversation.findMany({
       where: {
@@ -133,8 +183,12 @@ export async function GET(request: NextRequest) {
       statsMap.set(stat.conversationId, existing);
     });
 
-    // Wait for counts
-    const [total, countResults] = await Promise.all([totalCountPromise, countsPromise]);
+    // Wait for counts (run in parallel with conversation fetch)
+    const [total, countResults, quickFilterResults] = await Promise.all([
+      totalCountPromise,
+      countsPromise,
+      quickFilterCountsPromise,
+    ]);
 
     // Transform for the frontend
     const transformed = paginatedConversations.map((conv) => {
@@ -229,9 +283,19 @@ export async function GET(request: NextRequest) {
       channels: countResults[3],
     };
 
+    // DYNAMIC QUICK FILTER COUNTS - accurate totals from database
+    const quickFilterCounts = {
+      active7d: quickFilterResults[0],
+      active30d: quickFilterResults[1],
+      untagged: quickFilterResults[2],
+      highVolume: Number(quickFilterResults[3][0]?.count || 0), // Convert bigint from raw query
+      newThisWeek: quickFilterResults[4],
+    };
+
     return NextResponse.json({
       contacts: transformed,
       counts,
+      quickFilterCounts, // New: accurate counts for smart filters
       pagination: {
         hasMore,
         nextCursor,

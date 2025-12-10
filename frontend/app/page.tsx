@@ -101,6 +101,14 @@ export default function Home() {
   const [contactsSearch, setContactsSearch] = useState('');
   const [contactsSearching, setContactsSearching] = useState(false); // Subtle search indicator
   const [isContactPanelOpen, setIsContactPanelOpen] = useState(false);
+  // DYNAMIC QUICK FILTER COUNTS - from server, always accurate
+  const [quickFilterCounts, setQuickFilterCounts] = useState({
+    active7d: 0,
+    active30d: 0,
+    untagged: 0,
+    highVolume: 0,
+    newThisWeek: 0,
+  });
 
   // All tags with their counts
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -287,6 +295,10 @@ export default function Home() {
         setContactCounts(data.counts);
         setContactsHasMore(data.pagination?.hasMore || false);
         setContactsNextCursor(data.pagination?.nextCursor || null);
+        // DYNAMIC: Update quick filter counts from server (always accurate)
+        if (data.quickFilterCounts) {
+          setQuickFilterCounts(data.quickFilterCounts);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch contacts:', error);
@@ -996,6 +1008,7 @@ export default function Home() {
             typeFilter={contactTypeFilter}
             onTypeFilterChange={setContactTypeFilter}
             counts={contactCounts}
+            quickFilterCounts={quickFilterCounts}
             onExportCsv={handleExportContactsCsv}
             allTags={allTags}
             onTagsChange={handleContactTagsChange}
