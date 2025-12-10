@@ -99,6 +99,7 @@ export default function Home() {
   const [contactsHasMore, setContactsHasMore] = useState(false);
   const [contactsNextCursor, setContactsNextCursor] = useState<string | null>(null);
   const [contactsSearch, setContactsSearch] = useState('');
+  const [contactsSearching, setContactsSearching] = useState(false); // Subtle search indicator
   const [isContactPanelOpen, setIsContactPanelOpen] = useState(false);
 
   // All tags with their counts
@@ -224,20 +225,29 @@ export default function Home() {
   }, []);
 
   // Fetch contacts for Contacts view (with pagination and search)
+  // WORLD-CLASS UX: Never show skeleton/loading when we already have data displayed
   const fetchContacts = useCallback(async (options?: {
     cursor?: string;
     search?: string;
     append?: boolean;
     type?: string;
+    isInitialLoad?: boolean; // Only show skeleton on true initial load (no data yet)
+    isSearch?: boolean; // Use subtle searching indicator instead of skeleton
   }) => {
-    const { cursor, search, append = false, type } = options || {};
+    const { cursor, search, append = false, type, isInitialLoad = false, isSearch = false } = options || {};
 
-    // If appending, show "loading more" state; otherwise full loading
+    // SMOOTH UX: Only show loading skeleton on true initial load (when no contacts displayed)
+    // For search/filter changes, keep showing existing data until new data arrives
     if (append) {
       setContactsLoadingMore(true);
-    } else {
+    } else if (isInitialLoad) {
+      // Only show full loading state when there's truly no data to display
       setContactsLoading(true);
+    } else if (isSearch) {
+      // Subtle search indicator - just spinner in search box, no skeleton flash
+      setContactsSearching(true);
     }
+    // For filter changes without search: no loading state at all
 
     try {
       const params = new URLSearchParams();
@@ -262,7 +272,7 @@ export default function Home() {
           // Append to existing contacts
           setContacts(prev => [...prev, ...data.contacts]);
         } else {
-          // Replace contacts
+          // Replace contacts - smooth swap without flash
           setContacts(data.contacts);
           // Select first contact if none selected
           if (!selectedContact && data.contacts.length > 0) {
@@ -278,6 +288,7 @@ export default function Home() {
     } finally {
       setContactsLoading(false);
       setContactsLoadingMore(false);
+      setContactsSearching(false);
     }
   }, [selectedContact]);
 
@@ -293,12 +304,13 @@ export default function Home() {
   }, [contactsLoadingMore, contactsHasMore, contactsNextCursor, contactsSearch, contactTypeFilter, fetchContacts]);
 
   // Handle contacts search (with debounce via effect)
+  // SMOOTH UX: Don't clear contacts - just fetch and swap seamlessly
   const handleContactsSearch = useCallback((search: string) => {
     setContactsSearch(search);
-    // Reset and fetch with new search
-    setContacts([]);
+    // Reset cursor for new search, but DON'T clear contacts (avoid skeleton flash)
     setContactsNextCursor(null);
-    fetchContacts({ search, type: contactTypeFilter });
+    // Fetch with isSearch flag - shows subtle spinner in search box
+    fetchContacts({ search, type: contactTypeFilter, isSearch: true });
   }, [contactTypeFilter, fetchContacts]);
 
   // Filter contacts by type
@@ -329,25 +341,34 @@ export default function Home() {
     fetchTags();
   }, [fetchConversations, fetchTags]);
 
-  // Fetch contacts when switching to contacts view
+  // Fetch contacts when switching to contacts view (initial load)
   useEffect(() => {
     if (viewMode === 'contacts' && contacts.length === 0) {
-      fetchContacts({ type: contactTypeFilter });
+      // TRUE initial load - show skeleton
+      fetchContacts({ type: contactTypeFilter, isInitialLoad: true });
     }
   }, [viewMode, contacts.length, contactTypeFilter, fetchContacts]);
 
+  // Track previous type filter to detect changes
+  const prevContactTypeFilterRef = useRef(contactTypeFilter);
+
   // Refetch contacts when type filter changes (reset pagination)
+  // SMOOTH UX: Don't clear contacts - swap seamlessly
   useEffect(() => {
-    if (viewMode === 'contacts' && contacts.length > 0) {
-      // Reset search when changing type filter
-      setContactsSearch('');
-      setContacts([]);
-      setContactsNextCursor(null);
-      fetchContacts({ type: contactTypeFilter });
+    // Only run when filter actually changes (not on initial mount)
+    if (prevContactTypeFilterRef.current !== contactTypeFilter) {
+      prevContactTypeFilterRef.current = contactTypeFilter;
+
+      if (viewMode === 'contacts') {
+        // Reset search when changing type filter
+        setContactsSearch('');
+        // DON'T clear contacts - avoid skeleton flash
+        setContactsNextCursor(null);
+        // Fetch will replace contacts when results arrive
+        fetchContacts({ type: contactTypeFilter });
+      }
     }
-    // Only run when contactTypeFilter changes (not on initial mount)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contactTypeFilter]);
+  }, [contactTypeFilter, viewMode, fetchContacts]);
 
   const handleTagFilterChange = (tagIds: string[]) => {
     setSelectedTagIds(tagIds);
@@ -979,6 +1000,7 @@ export default function Home() {
             isLoadingMore={contactsLoadingMore}
             onLoadMore={loadMoreContacts}
             onSearch={handleContactsSearch}
+            isSearching={contactsSearching}
           />
         </div>
 

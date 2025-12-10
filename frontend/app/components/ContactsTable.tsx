@@ -113,12 +113,13 @@ interface ContactsTableProps {
   allTags?: Tag[];
   onTagsChange?: (contactId: string, tags: { id: string; name: string; color: string | null }[]) => void;
   onBulkTagsChange?: (contactIds: string[], tags: { id: string; name: string; color: string | null }[]) => void;
-  isLoading?: boolean;
+  isLoading?: boolean; // Initial load only - shows skeleton
   // Infinite scroll props
   hasMore?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
   onSearch?: (search: string) => void;
+  isSearching?: boolean; // Subtle indicator during search (no skeleton)
 }
 
 export default function ContactsTable({
@@ -136,6 +137,7 @@ export default function ContactsTable({
   isLoadingMore = false,
   onLoadMore,
   onSearch,
+  isSearching = false,
 }: ContactsTableProps) {
   const isMobile = useIsMobile();
   const [search, setSearch] = useState('');
@@ -931,12 +933,22 @@ export default function ContactsTable({
               externalClearSignal={filterClearSignal}
             />
           )}
-          {/* Search */}
+          {/* Search - with subtle loading indicator */}
           <div className="relative" style={{ flex: isMobile ? 1 : 'none' }}>
-            <SearchIcon
-              className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
-              style={{ left: '10px', color: 'var(--text-quaternary)', width: '14px', height: '14px' }}
-            />
+            {/* Show spinner when searching, otherwise show search icon */}
+            {isSearching ? (
+              <div
+                className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ left: '10px' }}
+              >
+                <InlineSpinner size={14} />
+              </div>
+            ) : (
+              <SearchIcon
+                className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ left: '10px', color: 'var(--text-quaternary)', width: '14px', height: '14px' }}
+              />
+            )}
             <input
               type="text"
               placeholder="Search..."
