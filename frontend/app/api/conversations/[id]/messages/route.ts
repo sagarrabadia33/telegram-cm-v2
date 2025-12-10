@@ -13,12 +13,13 @@ export async function GET(
     // Users can scroll to load more via infinite scroll pagination
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 500);
 
-    // Combined query: get conversation type and count in one go
-    // Using select to minimize data transfer
+    // Combined query: get conversation type, externalChatId, and count in one go
+    // externalChatId is needed for on-demand media download from Telegram
     const conversation = await prisma.conversation.findUnique({
       where: { id },
       select: {
         type: true,
+        externalChatId: true,  // Telegram chat ID for media downloads
         _count: { select: { messages: true } },
       },
     });
@@ -29,6 +30,7 @@ export async function GET(
 
     const isGroup = conversation.type === 'group' || conversation.type === 'supergroup';
     const totalMessages = conversation._count.messages;
+    const telegramChatId = conversation.externalChatId;  // For on-demand media download
 
     // Fetch messages with proper limit
     // For initial load: fetch LATEST messages (desc), then reverse for chronological display
@@ -41,6 +43,7 @@ export async function GET(
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
       select: {
         id: true,
+        externalMessageId: true,  // Telegram message ID for media downloads
         body: true,
         direction: true,
         sentAt: true,
@@ -68,6 +71,10 @@ export async function GET(
 
     const transformed = messages.map((msg) => {
       // Parse attachments for media display with on-demand download support
+      // Use message's externalMessageId and conversation's externalChatId for ALL messages
+      // This ensures historical messages (before telegramMessageId was stored) work too
+      const msgTelegramId = msg.externalMessageId ? parseInt(msg.externalMessageId, 10) : null;
+
       let media: {
         type: string;
         url: string;
@@ -76,7 +83,7 @@ export async function GET(
         size?: number;
         thumbnail?: string;
         telegramMessageId?: number;
-        telegramChatId?: number;
+        telegramChatId?: string;
       }[] = [];
       if (msg.hasAttachments && msg.attachments) {
         const attachments = msg.attachments as {
@@ -88,22 +95,18 @@ export async function GET(
             mimeType?: string;
             storageKey?: string;
             base64?: string;  // Legacy: full base64 data URL
-            thumbnail?: string;  // NEW: blur preview thumbnail
-            telegramMessageId?: number;  // NEW: for on-demand download
-            telegramChatId?: number;  // NEW: for on-demand download
+            thumbnail?: string;  // Blur preview thumbnail
           }[]
         };
         if (attachments.files) {
           media = attachments.files.map((file) => {
-            // Determine the URL to use:
-            // 1. If thumbnail exists, use on-demand download endpoint
-            // 2. If base64 exists (legacy), use it directly
-            // 3. Otherwise fall back to local file path (won't work in production)
+            // ALWAYS use on-demand download if we have telegram IDs (historical + new messages)
+            // Priority: 1. On-demand from Telegram API, 2. base64 data URL, 3. Local path (fallback)
             let url: string;
 
-            if (file.telegramMessageId && file.telegramChatId) {
-              // ON-DEMAND: Use download proxy endpoint
-              url = `/api/media/download?telegram_message_id=${file.telegramMessageId}&telegram_chat_id=${file.telegramChatId}`;
+            if (msgTelegramId && telegramChatId) {
+              // ON-DEMAND: Use download proxy endpoint - works for ALL messages
+              url = `/api/media/download?telegram_message_id=${msgTelegramId}&telegram_chat_id=${telegramChatId}`;
             } else if (file.base64) {
               // LEGACY: Direct base64 data URL
               url = file.base64;
@@ -121,8 +124,8 @@ export async function GET(
               mimeType: file.mimeType,
               size: file.size,
               thumbnail: file.thumbnail,  // Blur preview for images
-              telegramMessageId: file.telegramMessageId,
-              telegramChatId: file.telegramChatId,
+              telegramMessageId: msgTelegramId || undefined,
+              telegramChatId: telegramChatId || undefined,
             };
           });
         }
