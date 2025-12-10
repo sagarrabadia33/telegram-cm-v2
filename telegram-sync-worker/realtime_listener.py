@@ -1546,6 +1546,13 @@ class RealtimeListener:
                 except:
                     pass
 
+                # 100x RELIABLE: Sync group members for groups/supergroups (for @mention feature)
+                if chat_type in ('group', 'supergroup') and entity:
+                    try:
+                        await self._sync_group_members(result['id'], chat_id, entity)
+                    except Exception as member_err:
+                        log(f"[AUTO-CREATE] Failed to sync members (non-fatal): {member_err}", level='WARN')
+
                 return result
             else:
                 log(f"[AUTO-CREATE] WARNING: No row returned from INSERT", level='WARN')
@@ -1570,6 +1577,91 @@ class RealtimeListener:
             cursor.close()
 
         return None
+
+    async def _sync_group_members(self, conversation_id: str, chat_id: int, entity) -> int:
+        """
+        100x RELIABLE SYNC: Sync group/supergroup members for @mention autocomplete.
+
+        Fetches members from Telegram and stores them in GroupMember table.
+        This enables the @mention dropdown to show group members in the UI.
+
+        Args:
+            conversation_id: Internal database conversation ID
+            chat_id: Telegram chat ID
+            entity: Telegram Chat/Channel entity
+
+        Returns:
+            Number of members synced
+        """
+        log(f"[MEMBER-SYNC] Starting member sync for conversation={conversation_id}, chat_id={chat_id}")
+
+        synced_count = 0
+        cursor = self.conn.cursor()
+
+        try:
+            # Fetch participants from Telegram
+            # For large groups, this may be limited by Telegram API
+            participants = await self.client.get_participants(entity, limit=500)
+            log(f"[MEMBER-SYNC] Fetched {len(participants)} participants from Telegram")
+
+            for user in participants:
+                if not user or not user.id:
+                    continue
+
+                # Skip bots and deleted users
+                if getattr(user, 'bot', False) or getattr(user, 'deleted', False):
+                    continue
+
+                # Build user data
+                external_user_id = str(user.id)
+                username = getattr(user, 'username', None)
+                first_name = getattr(user, 'first_name', None)
+                last_name = getattr(user, 'last_name', None)
+
+                # Determine role (Telethon returns participant info)
+                role = 'member'
+                participant = getattr(user, 'participant', None)
+                if participant:
+                    participant_type = type(participant).__name__
+                    if 'Creator' in participant_type:
+                        role = 'creator'
+                    elif 'Admin' in participant_type:
+                        role = 'administrator'
+
+                # Generate a unique member ID
+                member_id = 'm' + hashlib.md5(f"{conversation_id}-{external_user_id}".encode()).hexdigest()[:24]
+
+                try:
+                    cursor.execute("""
+                        INSERT INTO telegram_crm."GroupMember" (
+                            id, "conversationId", "externalUserId", username,
+                            "firstName", "lastName", role, "createdAt"
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT ("conversationId", "externalUserId")
+                        DO UPDATE SET
+                            username = EXCLUDED.username,
+                            "firstName" = EXCLUDED."firstName",
+                            "lastName" = EXCLUDED."lastName",
+                            role = EXCLUDED.role
+                    """, (member_id, conversation_id, external_user_id, username,
+                          first_name, last_name, role))
+                    synced_count += 1
+                except Exception as e:
+                    log(f"[MEMBER-SYNC] Error inserting member {external_user_id}: {e}", level='WARN')
+                    continue
+
+            self.conn.commit()
+            log(f"[MEMBER-SYNC] SUCCESS: Synced {synced_count} members for conversation={conversation_id}")
+
+        except Exception as e:
+            self.conn.rollback()
+            log(f"[MEMBER-SYNC] ERROR syncing members: {e}", level='ERROR')
+            raise
+        finally:
+            cursor.close()
+
+        return synced_count
 
     async def _active_poll_loop(self):
         """
@@ -1812,15 +1904,25 @@ class RealtimeListener:
 
                             if row:
                                 # Update cache with FULL conversation data (including 'id')
-                                self._conversation_cache[external_id] = {
+                                conv_data = {
                                     'id': row[0],
                                     'title': row[1],
                                     'type': row[2],
                                     'is_sync_disabled': row[3]
                                 }
+                                self._conversation_cache[external_id] = conv_data
                                 # LINEAR-STYLE: Sync unread + user status for existing dialogs from DB
                                 if await self._sync_dialog_status(dialog, row[0], dialog_name):
                                     status_synced += 1
+
+                                # 100x RELIABLE: Sync group members for existing groups (for @mention feature)
+                                if conv_data['type'] in ('group', 'supergroup'):
+                                    try:
+                                        entity = await self.client.get_entity(chat_id)
+                                        await self._sync_group_members(conv_data['id'], chat_id, entity)
+                                    except Exception as member_err:
+                                        log(f"[DISCOVERY] Failed to sync members for {dialog_name}: {member_err}", level='WARN')
+
                                 already_known += 1
                                 continue
                         except Exception as e:
