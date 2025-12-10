@@ -84,6 +84,9 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesLoadingMore, setMessagesLoadingMore] = useState(false);
+  const [messagesHasMore, setMessagesHasMore] = useState(false);
+  const [messagesNextCursor, setMessagesNextCursor] = useState<string | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
 
   // Contacts state
@@ -92,6 +95,10 @@ export default function Home() {
   const [contactTypeFilter, setContactTypeFilter] = useState<'all' | 'people' | 'groups' | 'channels'>('all');
   const [contactCounts, setContactCounts] = useState({ all: 0, people: 0, groups: 0, channels: 0 });
   const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactsLoadingMore, setContactsLoadingMore] = useState(false);
+  const [contactsHasMore, setContactsHasMore] = useState(false);
+  const [contactsNextCursor, setContactsNextCursor] = useState<string | null>(null);
+  const [contactsSearch, setContactsSearch] = useState('');
   const [isContactPanelOpen, setIsContactPanelOpen] = useState(false);
 
   // All tags with their counts
@@ -216,26 +223,83 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch contacts for Contacts view
-  const fetchContacts = useCallback(async () => {
-    setContactsLoading(true);
+  // Fetch contacts for Contacts view (with pagination and search)
+  const fetchContacts = useCallback(async (options?: {
+    cursor?: string;
+    search?: string;
+    append?: boolean;
+    type?: string;
+  }) => {
+    const { cursor, search, append = false, type } = options || {};
+
+    // If appending, show "loading more" state; otherwise full loading
+    if (append) {
+      setContactsLoadingMore(true);
+    } else {
+      setContactsLoading(true);
+    }
+
     try {
-      const response = await fetch('/api/contacts');
+      const params = new URLSearchParams();
+      params.set('limit', '50');
+      if (cursor) params.set('cursor', cursor);
+      if (search) params.set('search', search);
+      if (type && type !== 'all') {
+        // Map filter to API type
+        const typeMap: Record<string, string> = {
+          'people': 'people',
+          'groups': 'group',
+          'channels': 'channel',
+        };
+        params.set('type', typeMap[type] || type);
+      }
+
+      const response = await fetch(`/api/contacts?${params.toString()}`);
       const data = await response.json();
+
       if (data.contacts) {
-        setContacts(data.contacts);
-        setContactCounts(data.counts);
-        // Select first contact if none selected
-        if (!selectedContact && data.contacts.length > 0) {
-          setSelectedContact(data.contacts[0]);
+        if (append) {
+          // Append to existing contacts
+          setContacts(prev => [...prev, ...data.contacts]);
+        } else {
+          // Replace contacts
+          setContacts(data.contacts);
+          // Select first contact if none selected
+          if (!selectedContact && data.contacts.length > 0) {
+            setSelectedContact(data.contacts[0]);
+          }
         }
+        setContactCounts(data.counts);
+        setContactsHasMore(data.pagination?.hasMore || false);
+        setContactsNextCursor(data.pagination?.nextCursor || null);
       }
     } catch (error) {
       console.error('Failed to fetch contacts:', error);
     } finally {
       setContactsLoading(false);
+      setContactsLoadingMore(false);
     }
   }, [selectedContact]);
+
+  // Load more contacts (infinite scroll)
+  const loadMoreContacts = useCallback(() => {
+    if (contactsLoadingMore || !contactsHasMore || !contactsNextCursor) return;
+    fetchContacts({
+      cursor: contactsNextCursor,
+      search: contactsSearch,
+      append: true,
+      type: contactTypeFilter,
+    });
+  }, [contactsLoadingMore, contactsHasMore, contactsNextCursor, contactsSearch, contactTypeFilter, fetchContacts]);
+
+  // Handle contacts search (with debounce via effect)
+  const handleContactsSearch = useCallback((search: string) => {
+    setContactsSearch(search);
+    // Reset and fetch with new search
+    setContacts([]);
+    setContactsNextCursor(null);
+    fetchContacts({ search, type: contactTypeFilter });
+  }, [contactTypeFilter, fetchContacts]);
 
   // Filter contacts by type
   const filteredContacts = useMemo(() => {
@@ -268,9 +332,22 @@ export default function Home() {
   // Fetch contacts when switching to contacts view
   useEffect(() => {
     if (viewMode === 'contacts' && contacts.length === 0) {
-      fetchContacts();
+      fetchContacts({ type: contactTypeFilter });
     }
-  }, [viewMode, contacts.length, fetchContacts]);
+  }, [viewMode, contacts.length, contactTypeFilter, fetchContacts]);
+
+  // Refetch contacts when type filter changes (reset pagination)
+  useEffect(() => {
+    if (viewMode === 'contacts' && contacts.length > 0) {
+      // Reset search when changing type filter
+      setContactsSearch('');
+      setContacts([]);
+      setContactsNextCursor(null);
+      fetchContacts({ type: contactTypeFilter });
+    }
+    // Only run when contactTypeFilter changes (not on initial mount)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactTypeFilter]);
 
   const handleTagFilterChange = (tagIds: string[]) => {
     setSelectedTagIds(tagIds);
@@ -348,6 +425,9 @@ export default function Home() {
     if (cachedMessages) {
       // Instantly show cached messages (no loading state!)
       setMessages(cachedMessages);
+      // Reset pagination - will be updated from API
+      setMessagesHasMore(false);
+      setMessagesNextCursor(null);
       // Refresh in background for freshness
       fetch(`/api/conversations/${conversationId}/messages`)
         .then(res => res.json())
@@ -355,6 +435,9 @@ export default function Home() {
           const freshMessages = data.messages || [];
           setCachedMessages(conversationId, freshMessages);
           setMessages(freshMessages);
+          // Update pagination info
+          setMessagesHasMore(data.hasMore);
+          setMessagesNextCursor(data.nextCursor);
         })
         .catch(console.error);
       return;
@@ -370,15 +453,48 @@ export default function Home() {
       const msgs = data.messages || [];
       setCachedMessages(conversationId, msgs);
       setMessages(msgs);
+      // Track pagination
+      setMessagesHasMore(data.hasMore);
+      setMessagesNextCursor(data.nextCursor);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
       setMessages([]);
+      setMessagesHasMore(false);
+      setMessagesNextCursor(null);
     } finally {
       if (showLoading) {
         setMessagesLoading(false);
       }
     }
   }, []);
+
+  // Load more (older) messages for infinite scroll
+  const loadMoreMessages = useCallback(async () => {
+    if (!selectedConversation || messagesLoadingMore || !messagesHasMore || !messagesNextCursor) return;
+
+    setMessagesLoadingMore(true);
+    try {
+      const response = await fetch(
+        `/api/conversations/${selectedConversation.id}/messages?cursor=${messagesNextCursor}`
+      );
+      const data: MessagesResponse = await response.json();
+      const olderMessages = data.messages || [];
+
+      // Prepend older messages (they're older, so go at the start)
+      setMessages(prev => [...olderMessages, ...prev]);
+
+      // Update pagination
+      setMessagesHasMore(data.hasMore);
+      setMessagesNextCursor(data.nextCursor);
+
+      // Update cache with all messages
+      setCachedMessages(selectedConversation.id, [...olderMessages, ...messages]);
+    } catch (error) {
+      console.error('Failed to load more messages:', error);
+    } finally {
+      setMessagesLoadingMore(false);
+    }
+  }, [selectedConversation, messagesLoadingMore, messagesHasMore, messagesNextCursor, messages]);
 
   // Real-time listener updates - auto-refresh when new messages arrive
   const handleNewMessages = useCallback(() => {
@@ -859,6 +975,10 @@ export default function Home() {
             onTagsChange={handleContactTagsChange}
             onBulkTagsChange={handleBulkContactTagsChange}
             isLoading={contactsLoading}
+            hasMore={contactsHasMore}
+            isLoadingMore={contactsLoadingMore}
+            onLoadMore={loadMoreContacts}
+            onSearch={handleContactsSearch}
           />
         </div>
 
@@ -1092,6 +1212,9 @@ export default function Home() {
             onSendWithAttachment={handleSendMessageWithAttachment}
             onTagsChange={handleTagsChange}
             highlightMessageId={highlightMessageId}
+            hasMore={messagesHasMore}
+            isLoadingMore={messagesLoadingMore}
+            onLoadMore={loadMoreMessages}
           />
         )}
       </div>

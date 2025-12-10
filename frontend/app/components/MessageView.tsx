@@ -14,6 +14,10 @@ interface MessageViewProps {
   onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename?: string; mimeType: string }) => void;
   onTagsChange?: (conversationId: string, tags: Tag[]) => void;
   highlightMessageId?: string | null;
+  // Infinite scroll for older messages
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 export default function MessageView({
@@ -23,12 +27,19 @@ export default function MessageView({
   onSendWithAttachment,
   onTagsChange,
   highlightMessageId,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
 }: MessageViewProps) {
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevMessagesLengthRef = useRef(0);
   const prevConversationIdRef = useRef<string | null>(null);
+  const prevScrollHeightRef = useRef<number>(0);
+  const isLoadingOlderRef = useRef(false);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Like Telegram/WhatsApp: instantly show latest messages on load, smooth scroll only for new messages
@@ -36,19 +47,51 @@ export default function MessageView({
     const isNewConversation = prevConversationIdRef.current !== conversation?.id;
     const isNewMessage = messages.length > prevMessagesLengthRef.current && !isNewConversation;
 
-    if (messagesEndRef.current) {
+    if (messagesEndRef.current && messagesContainerRef.current) {
       if (isNewConversation || prevMessagesLengthRef.current === 0) {
         // Initial load or conversation change: instant scroll (no animation)
         messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
-      } else if (isNewMessage) {
-        // New message added: smooth scroll
+        isLoadingOlderRef.current = false;
+      } else if (isNewMessage && !isLoadingOlderRef.current) {
+        // New message added: smooth scroll (only if we're not loading older messages)
         messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      } else if (isLoadingOlderRef.current) {
+        // Older messages loaded: preserve scroll position
+        const newScrollHeight = messagesContainerRef.current.scrollHeight;
+        const scrollDiff = newScrollHeight - prevScrollHeightRef.current;
+        messagesContainerRef.current.scrollTop += scrollDiff;
+        isLoadingOlderRef.current = false;
       }
     }
 
     prevMessagesLengthRef.current = messages.length;
     prevConversationIdRef.current = conversation?.id || null;
   }, [messages, conversation?.id]);
+
+  // Intersection observer for loading older messages (triggers at TOP of list)
+  useEffect(() => {
+    if (!onLoadMore || !hasMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !isLoadingMore) {
+          // Save scroll height before loading more
+          if (messagesContainerRef.current) {
+            prevScrollHeightRef.current = messagesContainerRef.current.scrollHeight;
+          }
+          isLoadingOlderRef.current = true;
+          onLoadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: '100px' }
+    );
+
+    if (loadMoreTriggerRef.current) {
+      observer.observe(loadMoreTriggerRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [onLoadMore, hasMore, isLoadingMore]);
 
   // Scroll to and highlight a specific message from search
   useEffect(() => {
@@ -299,7 +342,9 @@ export default function MessageView({
           animation: messagePulse 1s ease-in-out 2;
         }
       `}</style>
-      <div style={{
+      <div
+        ref={messagesContainerRef}
+        style={{
         flex: 1,
         overflowY: 'auto',
         padding: 'var(--space-4)',
@@ -307,6 +352,19 @@ export default function MessageView({
         flexDirection: 'column',
         gap: 'var(--space-2)',
       }}>
+        {/* Load more trigger at TOP for older messages */}
+        {hasMore && (
+          <div ref={loadMoreTriggerRef} style={{ padding: '8px 0', textAlign: 'center' }}>
+            {isLoadingMore ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                <LoadingSpinner size={14} />
+                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading older messages...</span>
+              </div>
+            ) : (
+              <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>Scroll up for older messages</span>
+            )}
+          </div>
+        )}
         {groupedMessages.map((group) => (
           <div key={group.date}>
             {/* Date Divider */}
@@ -767,6 +825,42 @@ function SendButton({ onClick, disabled, loading }: SendButtonProps) {
         <SendIcon style={{ width: '18px', height: '18px' }} />
       )}
     </button>
+  );
+}
+
+// Loading spinner for infinite scroll
+function LoadingSpinner({ size = 16 }: { size?: number }) {
+  return (
+    <>
+      <style>{`
+        @keyframes spinLoader {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 16 16"
+        fill="none"
+        style={{ animation: 'spinLoader 0.8s linear infinite' }}
+      >
+        <circle
+          cx="8"
+          cy="8"
+          r="6"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeOpacity="0.25"
+        />
+        <path
+          d="M14 8a6 6 0 00-6-6"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      </svg>
+    </>
   );
 }
 

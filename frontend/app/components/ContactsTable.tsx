@@ -114,6 +114,11 @@ interface ContactsTableProps {
   onTagsChange?: (contactId: string, tags: { id: string; name: string; color: string | null }[]) => void;
   onBulkTagsChange?: (contactIds: string[], tags: { id: string; name: string; color: string | null }[]) => void;
   isLoading?: boolean;
+  // Infinite scroll props
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
+  onSearch?: (search: string) => void;
 }
 
 export default function ContactsTable({
@@ -127,6 +132,10 @@ export default function ContactsTable({
   onTagsChange,
   onBulkTagsChange,
   isLoading = false,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
+  onSearch,
 }: ContactsTableProps) {
   const isMobile = useIsMobile();
   const [search, setSearch] = useState('');
@@ -165,6 +174,50 @@ export default function ContactsTable({
 
   const tagDropdownRef = useRef<HTMLDivElement>(null);
   const lastActiveDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Infinite scroll refs
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
+  const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Intersection observer for infinite scroll
+  useEffect(() => {
+    if (!onLoadMore || !hasMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !isLoadingMore && !isLoading) {
+          onLoadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: '100px' }
+    );
+
+    if (loadMoreTriggerRef.current) {
+      observer.observe(loadMoreTriggerRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [onLoadMore, hasMore, isLoadingMore, isLoading]);
+
+  // Debounced search - call onSearch if provided
+  useEffect(() => {
+    if (!onSearch) return;
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+
+    searchDebounceRef.current = setTimeout(() => {
+      onSearch(search);
+    }, 300);
+
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [search, onSearch]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -1656,15 +1709,30 @@ export default function ContactsTable({
                 : 'No contacts yet'}
             </div>
           ) : (
-            sorted.map((contact) => (
-              <MobileContactCard
-                key={contact.id}
-                contact={contact}
-                onClick={() => onSelect(contact)}
-                isSelected={selectedContactIds.has(contact.id)}
-                onToggleSelect={() => toggleSelectContact(contact.id)}
-              />
-            ))
+            <>
+              {sorted.map((contact) => (
+                <MobileContactCard
+                  key={contact.id}
+                  contact={contact}
+                  onClick={() => onSelect(contact)}
+                  isSelected={selectedContactIds.has(contact.id)}
+                  onToggleSelect={() => toggleSelectContact(contact.id)}
+                />
+              ))}
+              {/* Loading more indicator for mobile */}
+              {isLoadingMore && (
+                <div style={{ padding: '16px', textAlign: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                    <InlineSpinner />
+                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading more...</span>
+                  </div>
+                </div>
+              )}
+              {/* Infinite scroll trigger for mobile */}
+              {hasMore && !isLoadingMore && sorted.length > 0 && (
+                <div ref={loadMoreTriggerRef} style={{ height: '20px' }} />
+              )}
+            </>
           )}
         </div>
       ) : (
@@ -1791,26 +1859,79 @@ export default function ContactsTable({
                   </td>
                 </tr>
               ) : (
-                sorted.map((contact) => (
-                  <ContactRow
-                    key={contact.id}
-                    contact={contact}
-                    onClick={() => onSelect(contact)}
-                    typeFilter={typeFilter}
-                    showPhoneColumn={showPhoneColumn}
-                    showMembersColumn={showMembersColumn}
-                    availableTags={availableTags}
-                    onTagsChange={onTagsChange}
-                    isSelected={selectedContactIds.has(contact.id)}
-                    onToggleSelect={() => toggleSelectContact(contact.id)}
-                  />
-                ))
+                <>
+                  {sorted.map((contact) => (
+                    <ContactRow
+                      key={contact.id}
+                      contact={contact}
+                      onClick={() => onSelect(contact)}
+                      typeFilter={typeFilter}
+                      showPhoneColumn={showPhoneColumn}
+                      showMembersColumn={showMembersColumn}
+                      availableTags={availableTags}
+                      onTagsChange={onTagsChange}
+                      isSelected={selectedContactIds.has(contact.id)}
+                      onToggleSelect={() => toggleSelectContact(contact.id)}
+                    />
+                  ))}
+                  {/* Loading more indicator */}
+                  {isLoadingMore && (
+                    <tr>
+                      <td colSpan={10} style={{ padding: '16px', textAlign: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                          <InlineSpinner />
+                          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading more contacts...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>
+          {/* Infinite scroll trigger */}
+          {hasMore && !isLoadingMore && sorted.length > 0 && (
+            <div ref={loadMoreTriggerRef} style={{ height: '20px' }} />
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+// Inline spinner for loading more
+function InlineSpinner({ size = 16 }: { size?: number }) {
+  return (
+    <>
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 16 16"
+        fill="none"
+        style={{ animation: 'spin 0.8s linear infinite' }}
+      >
+        <circle
+          cx="8"
+          cy="8"
+          r="6"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeOpacity="0.25"
+        />
+        <path
+          d="M14 8a6 6 0 00-6-6"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      </svg>
+    </>
   );
 }
 

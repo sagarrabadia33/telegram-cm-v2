@@ -5,12 +5,18 @@ import { prisma } from '@/app/lib/prisma';
  * GET /api/contacts
  *
  * Returns contacts (conversations) with enriched stats for the Contacts page.
- * Supports filtering by type: all, private (people), group, supergroup, channel
+ * Supports:
+ * - filtering by type: all, private (people), group, supergroup, channel
+ * - pagination: limit (default 50), cursor (for infinite scroll)
+ * - search: server-side search on name, username, phone
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const typeFilter = searchParams.get('type') || 'all';
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
+    const cursor = searchParams.get('cursor');
+    const search = searchParams.get('search')?.toLowerCase().trim();
 
     // Build type filter
     const typeWhere = typeFilter === 'all'
@@ -19,12 +25,43 @@ export async function GET(request: NextRequest) {
         ? { type: 'private' }
         : { type: typeFilter };
 
+    // Build search filter for server-side search
+    const searchWhere = search ? {
+      OR: [
+        { title: { contains: search, mode: 'insensitive' as const } },
+        { contact: { firstName: { contains: search, mode: 'insensitive' as const } } },
+        { contact: { lastName: { contains: search, mode: 'insensitive' as const } } },
+        { contact: { displayName: { contains: search, mode: 'insensitive' as const } } },
+        { contact: { primaryPhone: { contains: search } } },
+        { telegramChat: { username: { contains: search, mode: 'insensitive' as const } } },
+      ],
+    } : {};
+
+    // Get total count for the type filter (for tabs - exclude search from count)
+    const totalCountPromise = prisma.conversation.count({
+      where: {
+        isSyncDisabled: false,
+        ...typeWhere,
+      },
+    });
+
+    // Get counts by type for tabs (without search filter)
+    const countsPromise = Promise.all([
+      prisma.conversation.count({ where: { isSyncDisabled: false, type: { in: ['private', 'group', 'supergroup', 'channel'] } } }),
+      prisma.conversation.count({ where: { isSyncDisabled: false, type: 'private' } }),
+      prisma.conversation.count({ where: { isSyncDisabled: false, type: { in: ['group', 'supergroup'] } } }),
+      prisma.conversation.count({ where: { isSyncDisabled: false, type: 'channel' } }),
+    ]);
+
     // Fetch conversations with all needed data
     const conversations = await prisma.conversation.findMany({
       where: {
         isSyncDisabled: false,
         ...typeWhere,
+        ...searchWhere,
       },
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      take: limit + 1, // Fetch one extra to check if there are more
       include: {
         contact: {
           select: {
@@ -69,8 +106,13 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // Get message stats per conversation (inbound/outbound counts)
-    const conversationIds = conversations.map(c => c.id);
+    // Determine if there are more results
+    const hasMore = conversations.length > limit;
+    const paginatedConversations = hasMore ? conversations.slice(0, limit) : conversations;
+    const nextCursor = hasMore ? paginatedConversations[paginatedConversations.length - 1]?.id : null;
+
+    // Get message stats per conversation (inbound/outbound counts) - only for returned conversations
+    const conversationIds = paginatedConversations.map(c => c.id);
     const messageStats = await prisma.message.groupBy({
       by: ['conversationId', 'direction'],
       where: {
@@ -91,8 +133,11 @@ export async function GET(request: NextRequest) {
       statsMap.set(stat.conversationId, existing);
     });
 
+    // Wait for counts
+    const [total, countResults] = await Promise.all([totalCountPromise, countsPromise]);
+
     // Transform for the frontend
-    const transformed = conversations.map((conv) => {
+    const transformed = paginatedConversations.map((conv) => {
       const contact = conv.contact;
       const isGroup = conv.type === 'group' || conv.type === 'supergroup';
       const isChannel = conv.type === 'channel';
@@ -176,17 +221,23 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // Count by type for the filter tabs
+    // Use pre-calculated counts for the filter tabs (from total DB, not just current page)
     const counts = {
-      all: transformed.length,
-      people: transformed.filter(c => c.type === 'private').length,
-      groups: transformed.filter(c => c.type === 'group' || c.type === 'supergroup').length,
-      channels: transformed.filter(c => c.type === 'channel').length,
+      all: countResults[0],
+      people: countResults[1],
+      groups: countResults[2],
+      channels: countResults[3],
     };
 
     return NextResponse.json({
       contacts: transformed,
       counts,
+      pagination: {
+        hasMore,
+        nextCursor,
+        total,
+        returned: transformed.length,
+      },
     });
   } catch (error) {
     console.error('Failed to fetch contacts:', error);
