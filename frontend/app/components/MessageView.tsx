@@ -423,6 +423,7 @@ export default function MessageView({
           onSend={handleSend}
           onSendWithAttachment={onSendWithAttachment}
           conversationId={conversation.id}
+          isGroup={isGroup}
         />
       </div>
     </div>
@@ -437,16 +438,204 @@ interface MessageInputWrapperProps {
   onSend: () => void;
   onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename?: string; mimeType: string }) => void;
   conversationId?: string;
+  isGroup?: boolean;
 }
 
-function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown, onSend, onSendWithAttachment, conversationId }: MessageInputWrapperProps) {
+// Telegram-style @ mention types
+interface GroupMember {
+  id: string;
+  odId: string;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  displayName: string;
+  mentionText: string;
+  role: string | null;
+  isAdmin: boolean;
+}
+
+function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown, onSend, onSendWithAttachment, conversationId, isGroup }: MessageInputWrapperProps) {
   const [isFocused, setIsFocused] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+
+  // Telegram-style @ mention state
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionStartPos, setMentionStartPos] = useState(0);
+  const [members, setMembers] = useState<GroupMember[]>([]);
+  const [filteredMembers, setFilteredMembers] = useState<GroupMember[]>([]);
+  const [selectedMemberIndex, setSelectedMemberIndex] = useState(0);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const mentionDropdownRef = useRef<HTMLDivElement>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [attachedFile, setAttachedFile] = useState<{ file: File; type: string; preview?: string; isImage?: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // 100x RELIABLE: AbortController for cancellable uploads
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // TELEGRAM-STYLE: Fetch group members when component mounts (for groups only)
+  useEffect(() => {
+    if (!isGroup || !conversationId) {
+      setMembers([]);
+      return;
+    }
+
+    const fetchMembers = async () => {
+      setIsLoadingMembers(true);
+      try {
+        const res = await fetch(`/api/conversations/${conversationId}/members`);
+        if (res.ok) {
+          const data = await res.json();
+          setMembers(data.members || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch group members:', error);
+      } finally {
+        setIsLoadingMembers(false);
+      }
+    };
+
+    fetchMembers();
+  }, [conversationId, isGroup]);
+
+  // TELEGRAM-STYLE: Filter members based on mention query
+  useEffect(() => {
+    if (!mentionQuery) {
+      setFilteredMembers(members.slice(0, 10));
+    } else {
+      const query = mentionQuery.toLowerCase();
+      const filtered = members.filter(m =>
+        m.displayName.toLowerCase().includes(query) ||
+        (m.username && m.username.toLowerCase().includes(query)) ||
+        (m.firstName && m.firstName.toLowerCase().includes(query)) ||
+        (m.lastName && m.lastName.toLowerCase().includes(query))
+      ).slice(0, 10);
+      setFilteredMembers(filtered);
+    }
+    setSelectedMemberIndex(0);
+  }, [mentionQuery, members]);
+
+  // TELEGRAM-STYLE: Detect @ trigger and extract query
+  const detectMention = (text: string, cursorPos: number) => {
+    // Look backwards from cursor to find @
+    let atPos = -1;
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const char = text[i];
+      if (char === '@') {
+        // Check if @ is at start or preceded by whitespace
+        if (i === 0 || /\s/.test(text[i - 1])) {
+          atPos = i;
+          break;
+        }
+      }
+      // Stop if we hit whitespace (no @ in this word)
+      if (/\s/.test(char)) break;
+    }
+
+    if (atPos >= 0) {
+      const query = text.slice(atPos + 1, cursorPos);
+      // Only show dropdown if query doesn't contain spaces (single word after @)
+      if (!/\s/.test(query)) {
+        return { found: true, query, startPos: atPos };
+      }
+    }
+    return { found: false, query: '', startPos: 0 };
+  };
+
+  // TELEGRAM-STYLE: Handle mention input changes
+  const handleMentionAwareInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    onInputChange(e);
+
+    if (!isGroup || members.length === 0) {
+      setShowMentions(false);
+      return;
+    }
+
+    const text = e.target.value;
+    const cursorPos = e.target.selectionStart || 0;
+    const { found, query, startPos } = detectMention(text, cursorPos);
+
+    if (found) {
+      setShowMentions(true);
+      setMentionQuery(query);
+      setMentionStartPos(startPos);
+    } else {
+      setShowMentions(false);
+      setMentionQuery('');
+    }
+  };
+
+  // TELEGRAM-STYLE: Insert selected mention
+  const insertMention = (member: GroupMember) => {
+    if (!textareaRef.current) return;
+
+    const text = inputValue;
+    const before = text.slice(0, mentionStartPos);
+    const after = text.slice(textareaRef.current.selectionStart || mentionStartPos + mentionQuery.length + 1);
+
+    // Use @username if available, otherwise @FirstName
+    const mentionText = member.username ? `@${member.username}` : `@${member.firstName || 'User'}`;
+    const newText = before + mentionText + ' ' + after;
+
+    // Create synthetic event to update input
+    const syntheticEvent = {
+      target: { value: newText }
+    } as React.ChangeEvent<HTMLTextAreaElement>;
+    onInputChange(syntheticEvent);
+
+    // Reset mention state
+    setShowMentions(false);
+    setMentionQuery('');
+
+    // Focus and set cursor position after mention
+    setTimeout(() => {
+      if (textareaRef.current) {
+        const newCursorPos = before.length + mentionText.length + 1;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
+  };
+
+  // TELEGRAM-STYLE: Handle keyboard navigation in mention dropdown
+  const handleMentionKeyDown = (e: React.KeyboardEvent) => {
+    if (!showMentions || filteredMembers.length === 0) {
+      onKeyDown(e);
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedMemberIndex(prev =>
+          prev < filteredMembers.length - 1 ? prev + 1 : 0
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedMemberIndex(prev =>
+          prev > 0 ? prev - 1 : filteredMembers.length - 1
+        );
+        break;
+      case 'Enter':
+      case 'Tab':
+        e.preventDefault();
+        insertMention(filteredMembers[selectedMemberIndex]);
+        break;
+      case 'Escape':
+        e.preventDefault();
+        setShowMentions(false);
+        break;
+      default:
+        onKeyDown(e);
+    }
+  };
+
+  // TELEGRAM-STYLE: Close mentions on blur (with delay to allow click)
+  const handleMentionBlur = () => {
+    setIsFocused(false);
+    setTimeout(() => setShowMentions(false), 200);
+  };
 
   const handleAttachClick = () => {
     fileInputRef.current?.click();
@@ -708,6 +897,116 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
         </div>
       )}
 
+      {/* TELEGRAM-STYLE: Mention dropdown (positioned above input) */}
+      {showMentions && filteredMembers.length > 0 && (
+        <div
+          ref={mentionDropdownRef}
+          style={{
+            background: 'var(--bg-primary)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+            maxHeight: '240px',
+            overflowY: 'auto',
+            marginBottom: 'var(--space-1)',
+          }}
+        >
+          {/* Header showing we're in mention mode */}
+          <div style={{
+            padding: 'var(--space-2) var(--space-3)',
+            borderBottom: '1px solid var(--border-subtle)',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--text-tertiary)',
+            fontWeight: 500,
+          }}>
+            {mentionQuery ? `Members matching "${mentionQuery}"` : 'Group members'} · {filteredMembers.length}
+          </div>
+
+          {/* Member list */}
+          {filteredMembers.map((member, index) => (
+            <div
+              key={member.id}
+              onClick={() => insertMention(member)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-3)',
+                padding: 'var(--space-2) var(--space-3)',
+                cursor: 'pointer',
+                background: index === selectedMemberIndex ? 'var(--bg-hover)' : 'transparent',
+                borderLeft: index === selectedMemberIndex ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                transition: 'background 100ms ease',
+              }}
+              onMouseEnter={() => setSelectedMemberIndex(index)}
+            >
+              {/* Avatar */}
+              <div style={{
+                width: '32px',
+                height: '32px',
+                borderRadius: 'var(--radius-full)',
+                background: member.isAdmin ? 'var(--accent-primary)' : 'var(--bg-secondary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 600,
+                color: member.isAdmin ? 'white' : 'var(--text-secondary)',
+                flexShrink: 0,
+              }}>
+                {(member.firstName?.[0] || member.username?.[0] || '?').toUpperCase()}
+              </div>
+
+              {/* Name and username */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 'var(--text-sm)',
+                  fontWeight: 500,
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                }}>
+                  {member.displayName}
+                  {member.isAdmin && (
+                    <span style={{
+                      fontSize: '10px',
+                      padding: '1px 6px',
+                      background: 'var(--accent-subtle)',
+                      color: 'var(--accent-primary)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontWeight: 600,
+                    }}>
+                      {member.role === 'creator' ? 'Owner' : 'Admin'}
+                    </span>
+                  )}
+                </div>
+                {member.username && (
+                  <div style={{
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--text-tertiary)',
+                  }}>
+                    @{member.username}
+                  </div>
+                )}
+              </div>
+
+              {/* Hint for selected item */}
+              {index === selectedMemberIndex && (
+                <div style={{
+                  fontSize: '10px',
+                  color: 'var(--text-quaternary)',
+                  padding: '2px 6px',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  Enter
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input area */}
       <div
         style={{
@@ -736,8 +1035,21 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
         <textarea
           ref={textareaRef}
           value={inputValue}
-          onChange={onInputChange}
+          onChange={handleMentionAwareInput}
           onKeyDown={(e) => {
+            // TELEGRAM-STYLE: Handle mention navigation first
+            if (showMentions && filteredMembers.length > 0) {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Tab' || e.key === 'Escape') {
+                handleMentionKeyDown(e);
+                return;
+              }
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                insertMention(filteredMembers[selectedMemberIndex]);
+                return;
+              }
+            }
+            // Normal behavior
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               handleSendClick();
@@ -746,8 +1058,8 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
             }
           }}
           onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          placeholder={attachedFile ? "Add a caption..." : "Type a message..."}
+          onBlur={handleMentionBlur}
+          placeholder={attachedFile ? "Add a caption..." : isGroup ? "Type a message... (@ to mention)" : "Type a message..."}
           rows={1}
           style={{
             flex: 1,
