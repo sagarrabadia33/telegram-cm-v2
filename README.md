@@ -1,6 +1,6 @@
 # Telegram CRM V2
 
-A comprehensive CRM system that syncs Telegram conversations in real-time, providing a web interface to manage and search through all your Telegram chats.
+A comprehensive CRM system that syncs Telegram conversations in real-time, providing a web interface to manage and search through all your Telegram chats with AI-powered insights.
 
 ## Table of Contents
 
@@ -8,6 +8,7 @@ A comprehensive CRM system that syncs Telegram conversations in real-time, provi
 - [Architecture](#architecture)
 - [Directory Structure](#directory-structure)
 - [Tech Stack](#tech-stack)
+- [Frontend Architecture](#frontend-architecture)
 - [Database Schema](#database-schema)
 - [API Reference](#api-reference)
 - [Telegram Sync System](#telegram-sync-system)
@@ -16,6 +17,8 @@ A comprehensive CRM system that syncs Telegram conversations in real-time, provi
 - [Production Deployment](#production-deployment)
 - [Operational Runbook](#operational-runbook)
 - [Key Features](#key-features)
+- [UI Components](#ui-components)
+- [Performance Optimizations](#performance-optimizations)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -23,9 +26,11 @@ A comprehensive CRM system that syncs Telegram conversations in real-time, provi
 ## Overview
 
 Telegram CRM V2 is a Next.js application that integrates with the Telegram API to:
-- Sync all personal and group conversations
+- Sync all personal and group conversations in real-time
 - Store messages, media, and participant information
 - Provide a searchable web interface for managing conversations
+- AI-powered conversation summaries and chat assistant
+- Notes timeline for tracking context over time
 - Support real-time message sync via a persistent Railway worker
 
 ---
@@ -39,7 +44,7 @@ Telegram CRM V2 is a Next.js application that integrates with the Telegram API t
 │                                                                       │
 │   ┌─────────────────┐         ┌─────────────────────────────────┐   │
 │   │   Next.js App   │         │     Railway Sync Worker         │   │
-│   │   (Vercel)      │         │     (Python + Telethon)         │   │
+│   │   (Railway)     │         │     (Python + Telethon)         │   │
 │   │                 │         │                                 │   │
 │   │  • Web UI       │         │  • 24/7 Telegram connection     │   │
 │   │  • API Routes   │◄───────►│  • Real-time message sync       │   │
@@ -56,7 +61,7 @@ Telegram CRM V2 is a Next.js application that integrates with the Telegram API t
 │   │  • Conversations, Messages, Participants                     │   │
 │   │  • TelegramWorkerSession (session storage)                   │   │
 │   │  • SyncLock (distributed locking)                            │   │
-│   │  • SyncMetadata (sync state tracking)                        │   │
+│   │  • ConversationNote (notes timeline)                         │   │
 │   └─────────────────────────────────────────────────────────────┘   │
 │                                                                       │
 └─────────────────────────────────────────────────────────────────────┘
@@ -90,21 +95,29 @@ Telegram CRM V2 is a Next.js application that integrates with the Telegram API t
 ## Directory Structure
 
 ```
-telegram-crm-v2/                 # Main repo (connected to Git, deploys to Vercel)
+telegram-crm-v2/
 ├── frontend/                    # Next.js 15 application
 │   ├── app/                     # App Router pages and API routes
 │   │   ├── api/                 # API endpoints
-│   │   │   ├── conversations/   # Conversation CRUD + search
+│   │   │   ├── conversations/   # Conversation CRUD + search + notes + chat
+│   │   │   ├── contacts/        # Contacts with pagination + search + smart filter
 │   │   │   ├── media/           # Media file serving
 │   │   │   ├── sync/            # Sync control endpoints
 │   │   │   ├── stats/           # Dashboard statistics
-│   │   │   └── search/          # Global search
-│   │   ├── conversations/       # Conversation list page
-│   │   └── page.tsx             # Dashboard home
-│   ├── components/              # React components
-│   │   ├── ui/                  # shadcn/ui components
-│   │   └── ...                  # Feature components
-│   ├── lib/                     # Utilities and Prisma client
+│   │   │   ├── search/          # Global search
+│   │   │   ├── tags/            # Tag management
+│   │   │   └── upload/          # File upload handling
+│   │   ├── components/          # React components
+│   │   │   ├── AIAssistant.tsx  # AI chat + notes timeline panel
+│   │   │   ├── ContactsTable.tsx # Contacts with infinite scroll
+│   │   │   ├── ConversationsList.tsx # Conversations with caching
+│   │   │   ├── MessageView.tsx  # Messages with infinite scroll
+│   │   │   ├── NotesTimeline.tsx # Notes timeline component
+│   │   │   ├── Skeleton.tsx     # Loading skeletons
+│   │   │   └── ...              # Other feature components
+│   │   ├── lib/                 # Utilities and Prisma client
+│   │   ├── types/               # TypeScript type definitions
+│   │   └── page.tsx             # Main dashboard (3-panel layout)
 │   ├── prisma/                  # Database schema
 │   │   └── schema.prisma        # Prisma schema definition
 │   └── public/                  # Static assets
@@ -113,7 +126,6 @@ telegram-crm-v2/                 # Main repo (connected to Git, deploys to Verce
 │   └── telegram-sync-python/    # Telethon-based sync
 │       ├── incremental_sync.py  # Incremental sync
 │       ├── realtime_listener.py # Real-time listener (local)
-│       ├── lock_manager.py      # Distributed locking
 │       └── telegram_session.session  # Local auth session
 │
 ├── telegram-sync-worker/        # Reference copy (NOT deployed from here!)
@@ -131,7 +143,7 @@ telegram-crm-v2/                 # Main repo (connected to Git, deploys to Verce
 └── requirements.txt             # Python dependencies
 ```
 
-> **IMPORTANT**: The Railway worker deploys from `/tmp/telegram-sync-deploy/`, NOT from the Git repo. This is a separate directory that is manually deployed using `railway up`.
+> **IMPORTANT**: The Railway worker deploys from `/tmp/telegram-sync-deploy/`, NOT from the Git repo.
 
 ---
 
@@ -141,13 +153,12 @@ telegram-crm-v2/                 # Main repo (connected to Git, deploys to Verce
 
 | Technology | Version | Purpose |
 |------------|---------|---------|
-| Next.js | 16.x | React framework with App Router |
+| Next.js | 15.x | React framework with App Router |
 | React | 19.x | UI library |
 | TypeScript | 5.x | Type safety |
 | Tailwind CSS | 4.x | Styling |
-| shadcn/ui | Latest | UI component library |
 | Prisma | 6.x | Database ORM |
-| Lucide React | Latest | Icons |
+| OpenAI API | GPT-4 | AI summaries and chat |
 
 ### Backend (Sync Worker)
 
@@ -162,9 +173,40 @@ telegram-crm-v2/                 # Main repo (connected to Git, deploys to Verce
 
 | Service | Purpose |
 |---------|---------|
-| Vercel | Frontend hosting |
-| Railway | Sync worker hosting (24/7) |
+| Railway | Next.js frontend + Sync worker hosting |
 | Azure PostgreSQL | Database |
+
+---
+
+## Frontend Architecture
+
+### Views
+
+The application has two main views:
+
+1. **Messages View** (default) - 3-panel layout:
+   - Left: Conversations list with search, filters, and tags
+   - Middle: Message view with infinite scroll
+   - Right: AI Assistant panel with tabs (Chat, Summary, Notes)
+
+2. **Contacts View** - Full-width table:
+   - Table with infinite scroll (50 contacts per load)
+   - Server-side search and filtering
+   - Type filters (All, People, Groups, Channels)
+   - Smart AI-powered filtering
+   - Bulk tagging operations
+
+### State Management
+
+- **Conversations**: Cached locally, auto-refresh on sync
+- **Messages**: Cached with 5-minute TTL for instant switching
+- **Contacts**: Paginated with server-side search
+
+### Real-time Updates
+
+- Polling every 5 seconds for new messages
+- WebSocket-ready architecture
+- Optimistic UI updates for sent messages
 
 ---
 
@@ -179,69 +221,76 @@ Stores Telegram chat metadata.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| id | String | Primary key |
-| tg_id | BigInt | Telegram chat ID |
-| name | String | Chat name |
-| type | String | private/group/channel |
-| unread_count | Int | Unread message count |
-| is_pinned | Boolean | Pinned status |
-| is_archived | Boolean | Archived status |
-| is_muted | Boolean | Muted status |
-| last_message_date | DateTime | Last message timestamp |
-| photo_path | String? | Profile photo path |
-| participant_count | Int | Number of participants |
-| about | String? | Chat description |
+| id | String | Primary key (CUID) |
+| externalChatId | String | Telegram chat ID |
+| title | String | Chat name |
+| type | String | private/group/supergroup/channel |
+| avatarUrl | String? | Profile photo URL |
+| lastMessageAt | DateTime? | Last message timestamp |
+| unreadCount | Int | Unread message count |
+| metadata | Json? | Additional metadata (notes, etc.) |
+| isSyncDisabled | Boolean | Exclude from sync |
 
 #### Message
 Stores all synced messages.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| id | String | Primary key |
-| tg_id | BigInt | Telegram message ID |
-| conversation_id | String | FK to Conversation |
-| sender_id | String? | FK to Participant |
-| sender_name | String? | Sender display name |
-| text | String? | Message text content |
-| date | DateTime | Message timestamp |
-| is_outgoing | Boolean | Sent by current user |
-| reply_to_msg_id | BigInt? | Reply reference |
-| forward_from_name | String? | Forward source |
-| media_type | String? | photo/video/document/etc |
-| media_path | String? | Local media file path |
-| media_mime_type | String? | MIME type |
+| id | String | Primary key (CUID) |
+| externalMessageId | String | Telegram message ID |
+| conversationId | String | FK to Conversation |
+| contactId | String? | FK to Contact (sender) |
+| body | String? | Message text content |
+| direction | String | inbound/outbound |
+| sentAt | DateTime | Message timestamp |
+| status | String | delivered/read/sent |
+| contentType | String | text/image/video/document/etc |
+| hasAttachments | Boolean | Has media attachments |
+| attachments | Json? | Attachment metadata |
 
-#### Participant
-Stores chat participants.
+#### Contact
+Stores contact information.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | id | String | Primary key |
-| tg_id | BigInt | Telegram user ID |
-| conversation_id | String | FK to Conversation |
-| first_name | String? | First name |
-| last_name | String? | Last name |
-| username | String? | @username |
-| phone | String? | Phone number |
-| is_bot | Boolean | Bot flag |
-| is_self | Boolean | Current user flag |
-| photo_path | String? | Profile photo path |
+| externalContactId | String | Telegram user ID |
+| firstName | String? | First name |
+| lastName | String? | Last name |
+| displayName | String? | Display name |
+| primaryPhone | String? | Phone number |
+| primaryEmail | String? | Email address |
+| avatarUrl | String? | Profile photo URL |
+| notes | String? | Contact notes |
+| isOnline | Boolean | Online status |
+| lastSeenAt | DateTime? | Last seen timestamp |
+
+#### ConversationNote
+Stores notes timeline entries.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | String | Primary key (CUID) |
+| conversationId | String | FK to Conversation |
+| type | String | note/meeting/call/file |
+| title | String? | Note title |
+| content | String | Note content |
+| fileName | String? | Attachment filename |
+| fileUrl | String? | Attachment URL |
+| eventAt | DateTime? | When event occurred |
+| createdAt | DateTime | Creation timestamp |
+| updatedAt | DateTime | Last update |
+
+#### Tag
+User-defined labels for conversations and contacts.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | String | Primary key |
+| name | String | Tag name |
+| color | String? | Hex color code |
 
 ### Sync Management Tables
-
-#### SyncMetadata
-Tracks sync state per conversation.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| id | String | Primary key |
-| conversation_id | String | Unique FK to Conversation |
-| last_synced_message_id | BigInt? | Last synced Telegram msg ID |
-| last_synced_at | DateTime? | Last sync timestamp |
-| sync_status | String | pending/syncing/completed/failed |
-| full_sync_completed | Boolean | Full history synced |
-| created_at | DateTime | Record creation time |
-| updated_at | DateTime | Last update time |
 
 #### SyncLock
 Distributed locking for sync operations.
@@ -249,10 +298,11 @@ Distributed locking for sync operations.
 | Column | Type | Description |
 |--------|------|-------------|
 | id | Int | Primary key |
-| lock_name | String | Unique lock identifier |
-| locked_by | String | Worker/process identifier |
-| locked_at | DateTime | Lock acquisition time |
-| expires_at | DateTime | Lock expiration time |
+| lockType | String | Unique lock identifier |
+| workerId | String | Worker/process identifier |
+| acquiredAt | DateTime | Lock acquisition time |
+| heartbeatAt | DateTime | Last heartbeat |
+| expiresAt | DateTime | Lock expiration time |
 
 #### TelegramWorkerSession
 Stores Telegram session for Railway worker.
@@ -260,24 +310,10 @@ Stores Telegram session for Railway worker.
 | Column | Type | Description |
 |--------|------|-------------|
 | id | Int | Primary key |
-| session_name | String | Unique session identifier |
-| session_data | Bytes | Binary session file (~229KB) |
-| created_at | DateTime | Creation timestamp |
-| updated_at | DateTime | Last update timestamp |
-
-### Other Tables
-
-#### Label
-User-defined labels for conversations.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| id | String | Primary key |
-| name | String | Label name |
-| color | String | Hex color code |
-
-#### ConversationLabel
-Many-to-many: Conversations <-> Labels.
+| sessionName | String | Unique session identifier |
+| sessionData | Bytes | Binary session file (~229KB) |
+| createdAt | DateTime | Creation timestamp |
+| updatedAt | DateTime | Last update timestamp |
 
 ---
 
@@ -289,32 +325,87 @@ Many-to-many: Conversations <-> Labels.
 |--------|----------|-------------|
 | GET | `/api/conversations` | List all conversations with filters |
 | GET | `/api/conversations/[id]` | Get conversation details |
-| POST | `/api/conversations/[id]` | Update conversation (archive, pin, etc) |
-| GET | `/api/conversations/[id]/members` | Get conversation participants |
+| PATCH | `/api/conversations/[id]` | Update conversation |
+| GET | `/api/conversations/[id]/messages` | Get messages (paginated) |
+| POST | `/api/conversations/[id]/send` | Send a message |
 
-**Query Parameters for GET /api/conversations:**
-- `search` - Search by name/text
-- `type` - Filter by type (private/group/channel)
-- `isArchived` - Filter archived
-- `isPinned` - Filter pinned
-- `isMuted` - Filter muted
-- `hasUnread` - Filter by unread status
-- `labelId` - Filter by label
-- `page`, `limit` - Pagination
+**Messages Pagination:**
+```
+GET /api/conversations/{id}/messages?limit=50&cursor={lastMessageId}
 
-### Messages
+Response:
+{
+  "messages": [...],
+  "nextCursor": "...",
+  "hasMore": true,
+  "total": 1234,
+  "returned": 50
+}
+```
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/conversations/[id]/messages` | Get messages for conversation |
-| GET | `/api/conversations/[id]/messages/search` | Search within conversation |
-
-### Media
+### Contacts
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/media?path=...` | Serve media file from disk |
-| GET | `/api/photos?path=...` | Serve profile photos |
+| GET | `/api/contacts` | List contacts (paginated with search) |
+| POST | `/api/contacts/smart-filter` | AI-powered smart filtering |
+| POST | `/api/contacts/bulk-tag` | Bulk tag operations |
+
+**Contacts Pagination:**
+```
+GET /api/contacts?limit=50&cursor={lastContactId}&search={query}&type={all|people|groups|channels}
+
+Response:
+{
+  "contacts": [...],
+  "counts": { "all": 100, "people": 50, "groups": 30, "channels": 20 },
+  "pagination": {
+    "hasMore": true,
+    "nextCursor": "...",
+    "total": 100,
+    "returned": 50
+  }
+}
+```
+
+### Notes Timeline
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/conversations/[id]/notes` | List all notes for conversation |
+| POST | `/api/conversations/[id]/notes` | Create a new note |
+| PUT | `/api/conversations/[id]/notes/[noteId]` | Update note |
+| DELETE | `/api/conversations/[id]/notes/[noteId]` | Delete note |
+
+**Note Types:**
+- `note` - General text note
+- `meeting` - Meeting notes with optional title
+- `call` - Call summary
+- `file` - File attachment with description
+
+### AI Assistant
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/conversations/[id]/chat` | Chat with AI about conversation |
+| GET | `/api/conversations/[id]/summary` | Get AI-generated summary |
+
+**Chat Request:**
+```json
+{
+  "message": "What are the key action items from this conversation?",
+  "conversationHistory": [...]
+}
+```
+
+### Tags
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/tags` | List all tags |
+| POST | `/api/tags` | Create tag |
+| PUT | `/api/tags/[id]` | Update tag |
+| DELETE | `/api/tags/[id]` | Delete tag |
 
 ### Search
 
@@ -322,31 +413,11 @@ Many-to-many: Conversations <-> Labels.
 |--------|----------|-------------|
 | GET | `/api/search?q=...` | Global search across all messages |
 
-### Sync Control
+### Media
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/sync/conversation` | Trigger sync for specific conversation |
-| GET | `/api/sync/status` | Get sync status |
-| POST | `/api/sync/all` | Trigger full sync |
-
-### Statistics
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/stats` | Dashboard statistics |
-| GET | `/api/stats/message-volume` | Message volume over time |
-
-### Labels
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/labels` | List all labels |
-| POST | `/api/labels` | Create label |
-| PUT | `/api/labels/[id]` | Update label |
-| DELETE | `/api/labels/[id]` | Delete label |
-| POST | `/api/conversations/[id]/labels` | Add label to conversation |
-| DELETE | `/api/conversations/[id]/labels/[labelId]` | Remove label |
+| GET | `/api/media/[path]` | Serve media file |
 
 ---
 
@@ -354,19 +425,19 @@ Many-to-many: Conversations <-> Labels.
 
 ### How It Works
 
-1. **Session Authentication**: Telegram requires a session file containing authentication state, encryption keys, and DC (data center) info. This is stored in the `TelegramWorkerSession` table.
+1. **Session Authentication**: Telegram requires a session file stored in `TelegramWorkerSession` table.
 
-2. **Connection**: The Telethon library connects to Telegram's MTProto API using the session.
+2. **Connection**: Telethon connects to Telegram's MTProto API.
 
-3. **Initial Sync**: On startup, performs a catch-up sync to fetch any messages missed while offline.
+3. **Initial Sync**: On startup, performs catch-up sync for missed messages.
 
-4. **Real-time Listening**: Maintains a persistent connection and receives new messages instantly via Telegram's update mechanism.
+4. **Real-time Listening**: Maintains persistent connection for instant updates.
 
-5. **Database Storage**: All messages, conversations, and participants are written to PostgreSQL.
+5. **Database Storage**: All data written to PostgreSQL.
 
 ### Production Worker (Railway)
 
-The Railway worker runs 24/7 with automatic restart on failure:
+The Railway worker runs 24/7 with automatic restart:
 
 ```toml
 # railway.toml
@@ -378,36 +449,13 @@ restartPolicyMaxRetries = 5
 numReplicas = 1
 ```
 
-**Startup Flow:**
-1. Restore session from `TelegramWorkerSession` table
-2. Connect to Telegram
-3. Run catch-up sync (fetch missed messages)
-4. Start real-time listener
-5. Expose `/health` endpoint for monitoring
+### 100x Reliability Features
 
-**Session Management:**
-- Session is ~229KB binary file stored as BYTEA in PostgreSQL
-- `clean_database_url()` strips Prisma's `?schema=xxx` param for psycopg2 compatibility
-- Session is periodically saved back to database
-
-### Local Development Scripts
-
-Located in `scripts/telegram-sync-python/`:
-
-| Script | Purpose |
-|--------|---------|
-| `sync_telegram.py` | Full conversation sync |
-| `telegram_listener.py` | Real-time message listener |
-| `sync_media.py` | Download media files |
-| `sync_participants.py` | Sync participant info |
-| `sync_all_messages.py` | Deep historical sync |
-
-**Running locally:**
-```bash
-cd scripts/telegram-sync-python
-python sync_telegram.py      # One-time sync
-python telegram_listener.py  # Keep running for real-time
-```
+1. **Stale Lock Cleanup**: Auto-releases locks from dead containers (2-minute threshold)
+2. **Conversation Validation**: Self-heals corrupted cache
+3. **Heartbeat Monitoring**: Updates every 30 seconds
+4. **Auto-retry**: Exponential backoff for failed operations
+5. **Dialog Discovery**: Discovers new conversations every 15 minutes
 
 ---
 
@@ -423,34 +471,11 @@ DATABASE_URL="postgresql://telegram_crm:PASSWORD@host:5432/postgres?schema=teleg
 TELEGRAM_API_ID="12345678"
 TELEGRAM_API_HASH="your_api_hash_here"
 
-# Media storage path (local file system)
+# OpenAI (for AI features)
+OPENAI_API_KEY="sk-..."
+
+# Media storage path
 MEDIA_BASE_PATH="/path/to/telegram_media"
-
-# For Railway worker only
-SESSION_PATH="/data/sessions/telegram_session"
-```
-
-### Getting Telegram Credentials
-
-1. Go to https://my.telegram.org
-2. Log in with your phone number
-3. Go to "API development tools"
-4. Create a new application
-5. Copy the `api_id` and `api_hash`
-
-### First-Time Session Setup
-
-```bash
-cd scripts/telegram-sync-python
-python sync_telegram.py
-# Enter phone number when prompted
-# Enter verification code from Telegram
-# Session file is created: telegram_session.session
-```
-
-Then upload to database:
-```bash
-python /tmp/create-worker-session-table.py
 ```
 
 ---
@@ -486,71 +511,34 @@ npx prisma db push
 npx prisma studio
 ```
 
-### Running Sync Scripts
-
-```bash
-cd scripts/telegram-sync-python
-
-# One-time full sync
-python sync_telegram.py
-
-# Real-time listener (keep running)
-python telegram_listener.py
-
-# Sync media files
-python sync_media.py
-```
-
 ---
 
 ## Production Deployment
 
-### Frontend (Vercel)
+### Frontend (Railway)
 
-The Next.js app is deployed to Vercel with:
+The Next.js app is deployed to Railway:
 - Automatic deployments from main branch
-- Environment variables configured in Vercel dashboard
-- Serverless API routes
+- Environment variables configured in Railway dashboard
+
+**Deploy manually:**
+```bash
+railway redeploy -y
+```
 
 ### Sync Worker (Railway)
 
-The Python worker is deployed to Railway from a **separate local directory** (not connected to Git):
+Deploy from `/tmp/telegram-sync-deploy/`:
 
-**Deploy location**: `/tmp/telegram-sync-deploy/`
+```bash
+cd /tmp/telegram-sync-deploy
+railway up
+```
 
-1. **Set up the deploy directory** (first time only):
-   ```bash
-   mkdir -p /tmp/telegram-sync-deploy
-   # Copy files from telegram-sync-worker/ as a base
-   cp telegram-sync-worker/* /tmp/telegram-sync-deploy/
-   cd /tmp/telegram-sync-deploy
-   railway link  # Link to your Railway project
-   ```
-
-2. **Environment variables** (set in Railway dashboard):
-   - `DATABASE_URL` - PostgreSQL connection (without `?schema=xxx`)
-   - `TELEGRAM_API_ID` - From my.telegram.org
-   - `TELEGRAM_API_HASH` - From my.telegram.org
-
-3. **Deploy changes:**
-   ```bash
-   cd /tmp/telegram-sync-deploy
-   railway up
-   ```
-
-4. **Monitor:**
-   ```bash
-   cd /tmp/telegram-sync-deploy
-   railway logs
-   ```
-
-### Why Railway for the Worker?
-
-- **24/7 uptime**: Maintains persistent Telegram connection
-- **Automatic restarts**: `restartPolicyType = "ON_FAILURE"`
-- **Health monitoring**: `/health` endpoint
-- **Session in DB**: Session stored in `TelegramWorkerSession` table (no volume needed)
-- **Distributed locking**: `SyncLock` table prevents duplicate workers
+**Monitor:**
+```bash
+railway logs
+```
 
 ---
 
@@ -566,28 +554,10 @@ railway logs | tail -50
 Look for:
 - `[INFO] Lock heartbeat updated` - Worker is alive
 - `[INFO] New [IN] ...` - Messages being synced
-- `[INFO] DISCOVERY completed` - Dialog discovery working
 
-### Check Lock Status
-
-```javascript
-// Run from telegram-crm-v2 directory
-DATABASE_URL="..." node -e "
-const { Client } = require('pg');
-const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-(async () => {
-  await client.connect();
-  const result = await client.query('SELECT * FROM telegram_crm.\"SyncLock\" WHERE \"lockType\" = \$1', ['listener']);
-  console.log(result.rows);
-  await client.end();
-})();
-"
-```
-
-### Release Stale Lock (if worker is stuck)
+### Release Stale Lock
 
 ```javascript
-// release-lock.js - Run from telegram-crm-v2 directory
 DATABASE_URL="..." node -e "
 const { Client } = require('pg');
 const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
@@ -600,73 +570,106 @@ const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { r
 "
 ```
 
-### Check Conversation Sync Status
-
-```bash
-DATABASE_URL="..." node -e "
-const { Client } = require('pg');
-const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-(async () => {
-  await client.connect();
-  // Search for a conversation
-  const result = await client.query(\`
-    SELECT c.id, c.title, c.type, c.\"createdAt\",
-           (SELECT COUNT(*) FROM telegram_crm.\"Message\" m WHERE m.\"conversationId\" = c.id) as message_count,
-           (SELECT MAX(m.\"createdAt\") FROM telegram_crm.\"Message\" m WHERE m.\"conversationId\" = c.id) as last_message_at
-    FROM telegram_crm.\"Conversation\" c
-    WHERE LOWER(c.title) LIKE '%search_term%'
-  \`);
-  console.log(result.rows);
-  await client.end();
-})();
-"
-```
-
-### Redeploy Worker
-
-```bash
-cd /tmp/telegram-sync-deploy
-railway up
-# Wait for build to complete, then check logs
-railway logs
-```
-
-### 100x Reliability Features
-
-The production worker includes these self-healing mechanisms:
-
-1. **Stale Lock Cleanup**: Automatically releases locks from dead containers (2-minute threshold)
-2. **Conversation Validation**: Self-heals when conversation cache is corrupted
-3. **Heartbeat Monitoring**: Updates heartbeat every 30 seconds
-4. **Auto-retry**: Retries failed operations with exponential backoff
-5. **Dialog Discovery**: Discovers new conversations every 15 minutes
-
 ---
 
 ## Key Features
 
 ### Conversation Management
-- View all Telegram conversations in one place
-- Filter by type (private/group/channel)
+- View all Telegram conversations (private, groups, channels)
+- Real-time message sync
 - Search across all messages
 - Archive, pin, and mute conversations
-- Apply custom labels
+- Apply custom tags/labels
 
-### Message Sync
-- Real-time message sync via Railway worker
-- Automatic catch-up on restart
-- Full message history support
-- Media file sync (photos, videos, documents)
+### AI Assistant (GPT-4 Powered)
+- **Chat Tab**: Ask questions about the conversation
+- **Summary Tab**: Auto-generated conversation summaries
+- **Notes Tab**: Timeline of notes with different types
 
-### Search
-- Global search across all conversations
-- In-conversation search
-- Search by sender, date, content
+### Notes Timeline
+- Add notes, meeting summaries, call logs
+- File attachments with descriptions
+- Chronological timeline view
+- Date grouping (Today, Yesterday, Dec 5, etc.)
+- Keyboard shortcuts (N to add note, E to edit)
 
-### Labels
-- Create custom labels with colors
-- Apply multiple labels to conversations
-- Filter conversations by label
+### Contacts Management
+- Table view with all contacts
+- Type filtering (People, Groups, Channels)
+- Infinite scroll (50 per load)
+- Server-side search
+- Smart AI-powered filtering
+- Bulk tagging operations
+
+### Lightning-Fast Performance
+- Skeleton loading animations
+- Message caching (5-minute TTL)
+- Instant conversation switching
+- Infinite scroll for messages and contacts
+- Server-side pagination and search
+
+### Media Support
+- Photos, videos, documents
+- Audio messages and voice notes
+- File previews and downloads
+- Media gallery view
+
+---
+
+## UI Components
+
+### Skeleton Loading (`Skeleton.tsx`)
+Shimmer animations while content loads:
+- `ConversationSkeleton` - Conversation list items
+- `MessageSkeleton` - Message bubbles
+- `ContactSkeleton` - Contact table rows
+- `PageSkeleton` - Full page loading state
+
+### Conversations List (`ConversationsList.tsx`)
+- Staggered slide-in animations
+- Unread count badges
+- Online status indicators
+- Tag display
+
+### Message View (`MessageView.tsx`)
+- Infinite scroll (load older on scroll up)
+- Message grouping by date
+- Read receipts and delivery status
+- Media rendering
+- Highlighted search results
+
+### Contacts Table (`ContactsTable.tsx`)
+- Infinite scroll
+- Multi-select with bulk actions
+- Inline tag editing
+- Smart filter integration
+
+### AI Assistant (`AIAssistant.tsx`)
+- Tabbed interface (Chat, Summary, Notes)
+- Real-time streaming responses
+- Notes timeline integration
+
+---
+
+## Performance Optimizations
+
+### Message Loading
+- **Initial load**: 50 messages (instant display)
+- **Caching**: 5-minute TTL per conversation
+- **Infinite scroll**: Load older messages on scroll up
+- **Scroll preservation**: Maintains position when loading more
+
+### Contacts Loading
+- **Initial load**: 50 contacts
+- **Server-side search**: Debounced (300ms)
+- **Infinite scroll**: IntersectionObserver at bottom
+- **Type filtering**: Server-side for accurate counts
+
+### UI Responsiveness
+- Skeleton loading instead of spinners
+- Optimistic UI updates
+- Staggered animations (capped at 200ms total)
+- Background data refresh
 
 ---
 
@@ -674,46 +677,34 @@ The production worker includes these self-healing mechanisms:
 
 ### "Session not found" on Railway
 
-The worker couldn't find the Telegram session. Check:
-1. `DATABASE_URL` is set correctly (without `?schema=xxx`)
+Check:
+1. `DATABASE_URL` is set correctly (without `?schema=xxx` for Python)
 2. Session exists in `TelegramWorkerSession` table
-3. Run `/tmp/create-worker-session-table.py` to upload session
-
-### "database \"telegram_crm\" does not exist"
-
-The DATABASE_URL uses schema-based isolation, not a separate database:
-- Correct: `postgres?schema=telegram_crm&sslmode=require`
-- Tables are in `telegram_crm` schema within `postgres` database
-
-### "psycopg2 doesn't understand schema parameter"
-
-The `session_manager.py` includes `clean_database_url()` to strip the `?schema=xxx` parameter that Prisma uses but psycopg2 doesn't support.
 
 ### Messages not syncing
 
 1. Check Railway logs: `railway logs`
 2. Verify worker is running: check `/health` endpoint
-3. Check for errors in sync: look for "ERROR" in logs
-4. Verify Telegram session is valid
+3. Check for stale locks
 
-### Media not loading
+### Slow loading
 
-1. Check `MEDIA_BASE_PATH` is set correctly
-2. Verify media files exist at the specified paths
-3. Check file permissions
-4. Run `sync_media.py` to download missing media
+1. Check browser network tab for API response times
+2. Verify pagination is working (should load 50 items)
+3. Clear browser cache
 
 ### Database connection issues
 
 1. Verify DATABASE_URL is correct
 2. Check SSL mode (`sslmode=require` for Azure)
-3. Verify IP allowlist includes Railway/Vercel IPs
-4. Test connection: `npx prisma db pull`
+3. Test connection: `npx prisma db pull`
 
 ---
 
 ## Version History
 
+- **v2.3** (December 2024): Lightning-fast infinite scroll for contacts and messages
+- **v2.2** (December 2024): Notes Timeline feature, AI Assistant improvements
 - **v2.1** (December 2024): 100x reliability features - self-healing, stale lock cleanup
 - **v2.0** (December 2024): Complete rewrite with Next.js 15, Railway worker
 - **v1.0** (November 2024): Initial GramJS-based implementation
@@ -731,4 +722,4 @@ The `session_manager.py` includes `clean_database_url()` to strip the `?schema=x
 
 ---
 
-*Last updated: December 8, 2024*
+*Last updated: December 10, 2024*
