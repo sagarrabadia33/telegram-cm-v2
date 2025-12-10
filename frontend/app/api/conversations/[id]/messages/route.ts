@@ -67,8 +67,17 @@ export async function GET(
     const messages = messagesRaw.reverse();
 
     const transformed = messages.map((msg) => {
-      // Parse attachments for media display
-      let media: { type: string; url: string; name?: string; mimeType?: string; }[] = [];
+      // Parse attachments for media display with on-demand download support
+      let media: {
+        type: string;
+        url: string;
+        name?: string;
+        mimeType?: string;
+        size?: number;
+        thumbnail?: string;
+        telegramMessageId?: number;
+        telegramChatId?: number;
+      }[] = [];
       if (msg.hasAttachments && msg.attachments) {
         const attachments = msg.attachments as {
           files?: {
@@ -78,22 +87,44 @@ export async function GET(
             name?: string;
             mimeType?: string;
             storageKey?: string;
-            base64?: string;  // NEW: base64 data URL for inline images
+            base64?: string;  // Legacy: full base64 data URL
+            thumbnail?: string;  // NEW: blur preview thumbnail
+            telegramMessageId?: number;  // NEW: for on-demand download
+            telegramChatId?: number;  // NEW: for on-demand download
           }[]
         };
         if (attachments.files) {
-          media = attachments.files.map((file) => ({
-            type: file.type || 'unknown',
-            // INLINE IMAGES: Use base64 data URL if available (for photos)
-            // Otherwise fall back to API path for local file serving
-            url: file.base64
-              ? file.base64  // Direct base64 data URL - works everywhere!
-              : file.path.startsWith('/media/')
+          media = attachments.files.map((file) => {
+            // Determine the URL to use:
+            // 1. If thumbnail exists, use on-demand download endpoint
+            // 2. If base64 exists (legacy), use it directly
+            // 3. Otherwise fall back to local file path (won't work in production)
+            let url: string;
+
+            if (file.telegramMessageId && file.telegramChatId) {
+              // ON-DEMAND: Use download proxy endpoint
+              url = `/api/media/download?telegram_message_id=${file.telegramMessageId}&telegram_chat_id=${file.telegramChatId}`;
+            } else if (file.base64) {
+              // LEGACY: Direct base64 data URL
+              url = file.base64;
+            } else {
+              // FALLBACK: Local file path (won't work in production Railway)
+              url = file.path.startsWith('/media/')
                 ? `/api${file.path}`
-                : `/api/media${file.path}`,
-            name: file.name,  // Include filename for display
-            mimeType: file.mimeType,  // Include mime type for icons
-          }));
+                : `/api/media${file.path}`;
+            }
+
+            return {
+              type: file.type || 'unknown',
+              url,
+              name: file.name,
+              mimeType: file.mimeType,
+              size: file.size,
+              thumbnail: file.thumbnail,  // Blur preview for images
+              telegramMessageId: file.telegramMessageId,
+              telegramChatId: file.telegramChatId,
+            };
+          });
         }
       }
 

@@ -1327,25 +1327,46 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
             </div>
           )}
 
-        {/* Media attachments (images/documents) - TELEGRAM-STYLE INLINE IMAGES */}
+        {/* Media attachments (images/documents) - TELEGRAM-STYLE WITH BLUR PREVIEW */}
         {hasMedia && message.media!.map((item, index) => {
           // Determine if this is an image that should be displayed inline
           // Check: type is photo/photos OR mimeType starts with image/
           // Also detect base64 data URLs which start with "data:image/"
           const isBase64Image = item.url?.startsWith('data:image/');
+          const hasThumbnail = !!(item as {thumbnail?: string}).thumbnail;
           const isImage = isBase64Image || item.type === 'photos' || item.type === 'photo' ||
                           (item.mimeType && item.mimeType.startsWith('image/'));
           const isVideo = item.type === 'video' || item.type === 'videos' ||
                           (item.mimeType && item.mimeType.startsWith('video/'));
           const displayName = item.name || (isImage ? 'Photo' : isVideo ? 'Video' : 'Document');
 
+          // Get thumbnail for blur preview (if available)
+          const thumbnail = (item as {thumbnail?: string}).thumbnail;
+
           return (
             <div key={index} style={{ marginBottom: text ? 'var(--space-2)' : 0 }}>
               {isImage && !imageError ? (
-                // TELEGRAM-STYLE INLINE IMAGE: Display image directly in chat bubble
+                // TELEGRAM-STYLE INLINE IMAGE: Blur preview -> sharp image transition
                 <div style={{ position: 'relative', cursor: 'pointer' }}>
-                  {/* Loading placeholder */}
-                  {imageLoading && (
+                  {/* Blur preview thumbnail (shown while loading full image) */}
+                  {imageLoading && thumbnail && (
+                    <img
+                      src={thumbnail}
+                      alt=""
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                        borderRadius: text ? '0' : 'var(--radius-lg)',
+                        filter: 'blur(10px)',
+                        transform: 'scale(1.1)', // Prevent blur edges from showing
+                      }}
+                    />
+                  )}
+                  {/* Loading spinner (shown if no thumbnail or while thumbnail loads) */}
+                  {imageLoading && !thumbnail && (
                     <div style={{
                       position: 'absolute',
                       inset: 0,
@@ -1367,6 +1388,28 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
                       }} />
                     </div>
                   )}
+                  {/* Loading indicator overlay on thumbnail */}
+                  {imageLoading && thumbnail && (
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(0,0,0,0.3)',
+                      borderRadius: text ? '0' : 'var(--radius-lg)',
+                    }}>
+                      <div style={{
+                        width: '32px',
+                        height: '32px',
+                        border: '2px solid rgba(255,255,255,0.5)',
+                        borderTopColor: 'white',
+                        borderRadius: '50%',
+                        animation: 'spin 0.8s linear infinite',
+                      }} />
+                    </div>
+                  )}
+                  {/* Full resolution image (loads on-demand from Telegram) */}
                   <img
                     src={item.url}
                     alt={displayName}
@@ -1379,7 +1422,7 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
                       borderRadius: text ? '0' : 'var(--radius-lg)',
                       display: 'block',
                       opacity: imageLoading ? 0 : 1,
-                      transition: 'opacity 200ms ease',
+                      transition: 'opacity 300ms ease',
                     }}
                   />
                 </div>

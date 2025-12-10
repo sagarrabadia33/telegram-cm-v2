@@ -665,10 +665,13 @@ const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { r
 - World-class UX with zero layout shift during scroll loading
 
 ### Media Support
-- Photos, videos, documents
+- **Inline photo display** - Photos appear directly in chat bubbles (Telegram-style)
+- Photos downloaded and stored as base64 data URLs for instant display
+- Click on images to view full size in new tab
+- Videos show as downloadable attachments
+- Documents with filename and download button
 - Audio messages and voice notes
-- File previews and downloads
-- Media gallery view
+- Max 5MB photos for inline display (larger shown as downloadable)
 
 ---
 
@@ -778,6 +781,12 @@ Check:
 
 ## Version History
 
+- **v2.6** (December 2024): Inline photo display
+  - Telegram-style inline images in chat bubbles
+  - Photos downloaded and stored as base64 data URLs
+  - Click-to-view-fullsize functionality
+  - Loading spinner during image load
+  - Works for both private chats and groups
 - **v2.5** (December 2024): @mention autocomplete for groups
   - Telegram-style @mention dropdown in group/supergroup chats
   - GroupMember table with automatic sync via discovery loop

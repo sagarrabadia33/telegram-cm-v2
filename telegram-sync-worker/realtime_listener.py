@@ -12,10 +12,12 @@ GUARANTEES:
 - No message loss (catch-up sync on startup)
 
 Author: telegram-crm-v2
-Build: v2.2-20251209 (outbound attachments inline + instant Message record)
+Build: v2.3-20251210 (inline images - photos downloaded as base64 data URLs)
 """
 
 import os
+import io
+import base64
 import asyncio
 import hashlib
 from datetime import datetime, timezone
@@ -71,6 +73,11 @@ AUTO_CREATE_CONVERSATION = True  # Auto-create conversations on first message
 
 # Initial message sync for newly discovered conversations
 INITIAL_MESSAGE_SYNC_LIMIT = 50  # Sync last 50 messages for newly discovered conversations
+
+# INLINE IMAGES: Download photos and store as base64 for inline display
+DOWNLOAD_PHOTOS_INLINE = True
+PHOTO_DOWNLOAD_TIMEOUT = 15  # seconds
+MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024  # 5MB max for base64 storage
 
 
 def log(message: str, level: str = 'INFO'):
@@ -1320,14 +1327,33 @@ class RealtimeListener:
             if has_attachments:
                 files = []
                 if isinstance(message.media, MessageMediaPhoto):
-                    # Photo message - create attachment entry
-                    # For photos, Telegram stores them on their servers
-                    # We create a reference that the frontend can use
+                    # INLINE IMAGE: Download photo and store as base64 data URL
+                    photo_data = None
+                    if DOWNLOAD_PHOTOS_INLINE:
+                        try:
+                            # Download photo to memory (BytesIO)
+                            photo_bytes = await asyncio.wait_for(
+                                self.client.download_media(message, file=bytes),
+                                timeout=PHOTO_DOWNLOAD_TIMEOUT
+                            )
+                            if photo_bytes and len(photo_bytes) <= MAX_PHOTO_SIZE_BYTES:
+                                # Encode as base64 data URL
+                                photo_b64 = base64.b64encode(photo_bytes).decode('utf-8')
+                                photo_data = f"data:image/jpeg;base64,{photo_b64}"
+                                log(f"[INLINE-IMAGE] Downloaded photo {message.id} ({len(photo_bytes)} bytes)")
+                            elif photo_bytes:
+                                log(f"[INLINE-IMAGE] Photo {message.id} too large ({len(photo_bytes)} bytes), skipping base64")
+                        except asyncio.TimeoutError:
+                            log(f"[INLINE-IMAGE] Download timeout for photo {message.id}", level='WARN')
+                        except Exception as e:
+                            log(f"[INLINE-IMAGE] Download error for photo {message.id}: {e}", level='WARN')
+
                     files.append({
                         'type': 'photo',
                         'path': f'/media/telegram/photos/{message.id}.jpg',
                         'mimeType': 'image/jpeg',
                         'name': 'Photo',
+                        'base64': photo_data,  # Data URL or None
                     })
                 elif isinstance(message.media, MessageMediaDocument):
                     doc = message.media.document
@@ -1335,6 +1361,7 @@ class RealtimeListener:
                         # Get filename and mime type from document attributes
                         filename = 'Document'
                         mime_type = getattr(doc, 'mime_type', 'application/octet-stream')
+                        doc_size = getattr(doc, 'size', 0)
 
                         for attr in getattr(doc, 'attributes', []):
                             if hasattr(attr, 'file_name'):
@@ -1350,11 +1377,29 @@ class RealtimeListener:
                         elif mime_type.startswith('audio/'):
                             file_type = 'audio'
 
+                        # INLINE IMAGE: Download images sent as documents too
+                        doc_base64 = None
+                        if DOWNLOAD_PHOTOS_INLINE and file_type == 'photo' and doc_size <= MAX_PHOTO_SIZE_BYTES:
+                            try:
+                                doc_bytes = await asyncio.wait_for(
+                                    self.client.download_media(message, file=bytes),
+                                    timeout=PHOTO_DOWNLOAD_TIMEOUT
+                                )
+                                if doc_bytes:
+                                    doc_b64 = base64.b64encode(doc_bytes).decode('utf-8')
+                                    doc_base64 = f"data:{mime_type};base64,{doc_b64}"
+                                    log(f"[INLINE-IMAGE] Downloaded image doc {message.id} ({len(doc_bytes)} bytes)")
+                            except asyncio.TimeoutError:
+                                log(f"[INLINE-IMAGE] Download timeout for doc {message.id}", level='WARN')
+                            except Exception as e:
+                                log(f"[INLINE-IMAGE] Download error for doc {message.id}: {e}", level='WARN')
+
                         files.append({
                             'type': file_type,
                             'path': f'/media/telegram/documents/{message.id}_{filename}',
                             'mimeType': mime_type,
                             'name': filename,
+                            'base64': doc_base64,  # Data URL for images, None for other docs
                         })
 
                 if files:
