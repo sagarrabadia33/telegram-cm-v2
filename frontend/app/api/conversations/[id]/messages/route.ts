@@ -78,18 +78,19 @@ export async function GET(
             name?: string;
             mimeType?: string;
             storageKey?: string;
+            base64?: string;  // NEW: base64 data URL for inline images
           }[]
         };
         if (attachments.files) {
           media = attachments.files.map((file) => ({
             type: file.type || 'unknown',
-            // Convert path to API URL for serving media files
-            // File paths are like /media/telegram/photos/xxx.jpg
-            // We serve them via /api/media/telegram/photos/xxx.jpg
-            // Outgoing paths are like /media/outgoing/upload_xxx
-            url: file.path.startsWith('/media/')
-              ? `/api${file.path}`
-              : `/api/media${file.path}`,
+            // INLINE IMAGES: Use base64 data URL if available (for photos)
+            // Otherwise fall back to API path for local file serving
+            url: file.base64
+              ? file.base64  // Direct base64 data URL - works everywhere!
+              : file.path.startsWith('/media/')
+                ? `/api${file.path}`
+                : `/api/media${file.path}`,
             name: file.name,  // Include filename for display
             mimeType: file.mimeType,  // Include mime type for icons
           }));

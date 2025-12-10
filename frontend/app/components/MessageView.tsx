@@ -1219,6 +1219,7 @@ interface MessageBubbleProps {
 
 function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubbleProps) {
   const [imageError, setImageError] = useState(false);
+  const [imageLoading, setImageLoading] = useState(true);
   const isSent = message.sent;
   const text = message.text;
   const hasMedia = message.media && message.media.length > 0;
@@ -1326,11 +1327,13 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
             </div>
           )}
 
-        {/* Media attachments (images/documents) - 100x RELIABLE */}
+        {/* Media attachments (images/documents) - TELEGRAM-STYLE INLINE IMAGES */}
         {hasMedia && message.media!.map((item, index) => {
           // Determine if this is an image that should be displayed inline
           // Check: type is photo/photos OR mimeType starts with image/
-          const isImage = item.type === 'photos' || item.type === 'photo' ||
+          // Also detect base64 data URLs which start with "data:image/"
+          const isBase64Image = item.url?.startsWith('data:image/');
+          const isImage = isBase64Image || item.type === 'photos' || item.type === 'photo' ||
                           (item.mimeType && item.mimeType.startsWith('image/'));
           const isVideo = item.type === 'video' || item.type === 'videos' ||
                           (item.mimeType && item.mimeType.startsWith('video/'));
@@ -1339,18 +1342,47 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
           return (
             <div key={index} style={{ marginBottom: text ? 'var(--space-2)' : 0 }}>
               {isImage && !imageError ? (
-                // INLINE IMAGE: Display image directly in chat bubble
-                <img
-                  src={item.url}
-                  alt={displayName}
-                  onError={() => setImageError(true)}
-                  style={{
-                    maxWidth: '100%',
-                    maxHeight: '300px',
-                    borderRadius: text ? '0' : 'var(--radius-lg)',
-                    display: 'block',
-                  }}
-                />
+                // TELEGRAM-STYLE INLINE IMAGE: Display image directly in chat bubble
+                <div style={{ position: 'relative', cursor: 'pointer' }}>
+                  {/* Loading placeholder */}
+                  {imageLoading && (
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
+                      borderRadius: text ? '0' : 'var(--radius-lg)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      minHeight: '100px',
+                      minWidth: '150px',
+                    }}>
+                      <div style={{
+                        width: '24px',
+                        height: '24px',
+                        border: '2px solid var(--text-quaternary)',
+                        borderTopColor: 'transparent',
+                        borderRadius: '50%',
+                        animation: 'spin 0.8s linear infinite',
+                      }} />
+                    </div>
+                  )}
+                  <img
+                    src={item.url}
+                    alt={displayName}
+                    onLoad={() => setImageLoading(false)}
+                    onError={() => { setImageError(true); setImageLoading(false); }}
+                    onClick={() => window.open(item.url, '_blank')}
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '400px',
+                      borderRadius: text ? '0' : 'var(--radius-lg)',
+                      display: 'block',
+                      opacity: imageLoading ? 0 : 1,
+                      transition: 'opacity 200ms ease',
+                    }}
+                  />
+                </div>
               ) : (
                 // DOCUMENT/FILE: Show with filename and download link
                 <a

@@ -109,10 +109,11 @@ telegram-crm-v2/
 │   │   │   └── upload/          # File upload handling
 │   │   ├── components/          # React components
 │   │   │   ├── AIAssistant.tsx  # AI chat + notes timeline panel
-│   │   │   ├── ContactsTable.tsx # Contacts with infinite scroll
+│   │   │   ├── ContactsTable.tsx # Contacts with infinite scroll + deduplication
 │   │   │   ├── ConversationsList.tsx # Conversations with caching
 │   │   │   ├── MessageView.tsx  # Messages with infinite scroll
 │   │   │   ├── NotesTimeline.tsx # Notes timeline component
+│   │   │   ├── SmartFilterSection.tsx # AI-powered filters with server counts
 │   │   │   ├── Skeleton.tsx     # Loading skeletons
 │   │   │   └── ...              # Other feature components
 │   │   ├── lib/                 # Utilities and Prisma client
@@ -290,6 +291,22 @@ User-defined labels for conversations and contacts.
 | name | String | Tag name |
 | color | String? | Hex color code |
 
+#### GroupMember
+Stores group/channel member information for @mention autocomplete.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | String | Primary key (CUID) |
+| conversationId | String | FK to Conversation |
+| externalUserId | String | Telegram user ID |
+| username | String? | Telegram username |
+| firstName | String? | First name |
+| lastName | String? | Last name |
+| role | String? | admin/creator/member |
+| joinedAt | DateTime? | When user joined |
+| createdAt | DateTime | Record creation timestamp |
+| updatedAt | DateTime | Last update timestamp |
+
 ### Sync Management Tables
 
 #### SyncLock
@@ -359,6 +376,13 @@ Response:
 {
   "contacts": [...],
   "counts": { "all": 100, "people": 50, "groups": 30, "channels": 20 },
+  "quickFilterCounts": {
+    "active7d": 70,      // Contacts active in last 7 days
+    "active30d": 124,    // Contacts active in last 30 days
+    "untagged": 761,     // Contacts without tags
+    "highVolume": 148,   // Contacts with 50+ messages
+    "newThisWeek": 15    // Contacts created in last 7 days
+  },
   "pagination": {
     "hasMore": true,
     "nextCursor": "...",
@@ -367,6 +391,9 @@ Response:
   }
 }
 ```
+
+**Smart Filter Counts:**
+The `quickFilterCounts` field provides server-calculated accurate counts for AI-powered smart filters. These are calculated from the entire database, not just the current page, ensuring accurate filter badges.
 
 ### Notes Timeline
 
@@ -419,6 +446,32 @@ Response:
 |--------|----------|-------------|
 | GET | `/api/media/[path]` | Serve media file |
 
+### Group Members (@mention)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/conversations/[id]/members` | Get group members for @mention autocomplete |
+
+**Members Response:**
+```json
+{
+  "members": [
+    {
+      "id": "...",
+      "odId": "123456789",
+      "username": "johndoe",
+      "firstName": "John",
+      "lastName": "Doe",
+      "displayName": "John Doe",
+      "mentionText": "@johndoe",
+      "role": "member",
+      "isAdmin": false
+    }
+  ],
+  "total": 50
+}
+```
+
 ---
 
 ## Telegram Sync System
@@ -456,6 +509,7 @@ numReplicas = 1
 3. **Heartbeat Monitoring**: Updates every 30 seconds
 4. **Auto-retry**: Exponential backoff for failed operations
 5. **Dialog Discovery**: Discovers new conversations every 15 minutes
+6. **Group Member Sync**: Automatically syncs group/channel members for @mention feature
 
 ---
 
@@ -596,17 +650,19 @@ const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { r
 ### Contacts Management
 - Table view with all contacts
 - Type filtering (People, Groups, Channels)
-- Infinite scroll (50 per load)
-- Server-side search
-- Smart AI-powered filtering
+- Infinite scroll (50 per load) with zero layout shift
+- Server-side search with 400ms debounce
+- Smart AI-powered filtering with accurate server-side counts
 - Bulk tagging operations
+- Deduplication on append to prevent duplicate keys
 
 ### Lightning-Fast Performance
-- Skeleton loading animations
+- Smart skeleton loading (only on true initial load, never during navigation)
 - Message caching (5-minute TTL)
 - Instant conversation switching
-- Infinite scroll for messages and contacts
+- Infinite scroll for messages and contacts with fixed-height containers
 - Server-side pagination and search
+- World-class UX with zero layout shift during scroll loading
 
 ### Media Support
 - Photos, videos, documents
@@ -637,12 +693,27 @@ Shimmer animations while content loads:
 - Read receipts and delivery status
 - Media rendering
 - Highlighted search results
+- **@mention autocomplete**: Type `@` in groups to see member dropdown (Telegram-style)
 
 ### Contacts Table (`ContactsTable.tsx`)
-- Infinite scroll
+- Infinite scroll with fixed-height (48px) loading container
 - Multi-select with bulk actions
 - Inline tag editing
-- Smart filter integration
+- Smart filter integration with server-side accurate counts
+- Deduplication on append to prevent duplicate key errors
+- 400ms debounced search with inline spinner
+- Zero skeleton flash (only shown on true initial load)
+
+### Smart Filter Section (`SmartFilterSection.tsx`)
+- AI-powered quick filters with accurate server-side counts
+- Available filters:
+  - **Active 7d**: Contacts with messages in last 7 days
+  - **Active 30d**: Contacts with messages in last 30 days
+  - **Untagged**: Contacts without any tags
+  - **High volume**: Contacts with 50+ messages
+  - **New this week**: Contacts created in last 7 days
+- Filter counts update dynamically with every API fetch
+- No page refresh needed for accurate numbers
 
 ### AI Assistant (`AIAssistant.tsx`)
 - Tabbed interface (Chat, Summary, Notes)
@@ -660,16 +731,20 @@ Shimmer animations while content loads:
 - **Scroll preservation**: Maintains position when loading more
 
 ### Contacts Loading
-- **Initial load**: 50 contacts
-- **Server-side search**: Debounced (300ms)
-- **Infinite scroll**: IntersectionObserver at bottom
+- **Initial load**: 50 contacts with skeleton animation
+- **Server-side search**: Debounced (400ms) with duplicate detection
+- **Infinite scroll**: IntersectionObserver with fixed-height loading container (no layout shift)
 - **Type filtering**: Server-side for accurate counts
+- **Smart filter counts**: Server-calculated totals for accurate filter badges
+- **Deduplication**: Prevents React duplicate key errors on append
 
 ### UI Responsiveness
-- Skeleton loading instead of spinners
+- Smart skeleton loading (only on true initial load)
 - Optimistic UI updates
 - Staggered animations (capped at 200ms total)
 - Background data refresh
+- Inline search spinner instead of full-page skeleton
+- Fixed-height scroll loading containers (48px) for zero layout shift
 
 ---
 
@@ -703,6 +778,17 @@ Check:
 
 ## Version History
 
+- **v2.5** (December 2024): @mention autocomplete for groups
+  - Telegram-style @mention dropdown in group/supergroup chats
+  - GroupMember table with automatic sync via discovery loop
+  - Members API endpoint (`/api/conversations/[id]/members`)
+  - Prioritizes admins/creators in autocomplete results
+- **v2.4** (December 2024): World-class UX - zero skeleton flash, server-side smart filter counts, zero layout shift
+  - Eliminated random skeleton flash during scroll and search
+  - Added server-side `quickFilterCounts` for accurate smart filter badges
+  - Fixed duplicate key React errors with deduplication on append
+  - Fixed-height (48px) loading container for zero layout shift
+  - Smooth 400ms debounced search with inline spinner
 - **v2.3** (December 2024): Lightning-fast infinite scroll for contacts and messages
 - **v2.2** (December 2024): Notes Timeline feature, AI Assistant improvements
 - **v2.1** (December 2024): 100x reliability features - self-healing, stale lock cleanup
