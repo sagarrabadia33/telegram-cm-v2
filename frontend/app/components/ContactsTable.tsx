@@ -1731,19 +1731,26 @@ export default function ContactsTable({
                   onToggleSelect={() => toggleSelectContact(contact.id)}
                 />
               ))}
-              {/* Loading more indicator for mobile */}
-              {isLoadingMore && (
-                <div style={{ padding: '16px', textAlign: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+              {/* 100x RELIABLE: Fixed height container for mobile loading indicator */}
+              <div
+                ref={loadMoreTriggerRef}
+                style={{
+                  height: '48px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  visibility: hasMore || isLoadingMore ? 'visible' : 'hidden',
+                }}
+              >
+                {isLoadingMore ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <InlineSpinner />
                     <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading more...</span>
                   </div>
-                </div>
-              )}
-              {/* Infinite scroll trigger for mobile */}
-              {hasMore && !isLoadingMore && sorted.length > 0 && (
-                <div ref={loadMoreTriggerRef} style={{ height: '20px' }} />
-              )}
+                ) : hasMore ? (
+                  <span style={{ fontSize: '12px', color: 'transparent' }}>Loading more...</span>
+                ) : null}
+              </div>
             </>
           )}
         </div>
@@ -1886,25 +1893,32 @@ export default function ContactsTable({
                       onToggleSelect={() => toggleSelectContact(contact.id)}
                     />
                   ))}
-                  {/* Loading more indicator */}
-                  {isLoadingMore && (
-                    <tr>
-                      <td colSpan={10} style={{ padding: '16px', textAlign: 'center' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                          <InlineSpinner />
-                          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading more contacts...</span>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                 </>
               )}
             </tbody>
           </table>
-          {/* Infinite scroll trigger */}
-          {hasMore && !isLoadingMore && sorted.length > 0 && (
-            <div ref={loadMoreTriggerRef} style={{ height: '20px' }} />
-          )}
+          {/* 100x RELIABLE: Fixed height container for loading indicator to prevent layout shift */}
+          {/* Always render the container, just show/hide content for zero layout shift */}
+          <div
+            ref={loadMoreTriggerRef}
+            style={{
+              height: '48px', // Fixed height - always same regardless of loading state
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              visibility: hasMore || isLoadingMore ? 'visible' : 'hidden',
+            }}
+          >
+            {isLoadingMore ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <InlineSpinner />
+                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading more contacts...</span>
+              </div>
+            ) : hasMore ? (
+              // Invisible trigger element - same height, just transparent
+              <span style={{ fontSize: '12px', color: 'transparent' }}>Loading more...</span>
+            ) : null}
+          </div>
         </div>
       )}
     </div>

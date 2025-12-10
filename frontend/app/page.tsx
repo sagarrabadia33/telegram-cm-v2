@@ -269,8 +269,13 @@ export default function Home() {
 
       if (data.contacts) {
         if (append) {
-          // Append to existing contacts
-          setContacts(prev => [...prev, ...data.contacts]);
+          // 100x RELIABLE: Append with deduplication to prevent React key errors
+          // This handles edge cases where cursor-based pagination might overlap
+          setContacts(prev => {
+            const existingIds = new Set(prev.map(c => c.id));
+            const newContacts = data.contacts.filter((c: Contact) => !existingIds.has(c.id));
+            return [...prev, ...newContacts];
+          });
         } else {
           // Replace contacts - smooth swap without flash
           setContacts(data.contacts);
