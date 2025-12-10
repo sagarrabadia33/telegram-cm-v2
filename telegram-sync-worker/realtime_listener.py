@@ -1916,7 +1916,10 @@ class RealtimeListener:
                                     status_synced += 1
 
                                 # 100x RELIABLE: Sync group members for existing groups (for @mention feature)
+                                # VERSION: MEMBER-SYNC-V2 - DEPLOYED 2025-12-10
+                                log(f"[DISCOVERY] Checking member sync for {dialog_name} (type={conv_data['type']})")
                                 if conv_data['type'] in ('group', 'supergroup'):
+                                    log(f"[DISCOVERY] Will sync members for group: {dialog_name}")
                                     try:
                                         entity = await self.client.get_entity(chat_id)
                                         await self._sync_group_members(conv_data['id'], chat_id, entity)
