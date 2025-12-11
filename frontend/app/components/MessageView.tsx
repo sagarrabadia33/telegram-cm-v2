@@ -479,6 +479,40 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
   // 100x RELIABLE: AbortController for cancellable uploads
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // TELEGRAM-STYLE: Handle clipboard paste for screenshots (Ctrl+V / Cmd+V)
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    // Look for image in clipboard
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault(); // Prevent pasting as text
+
+        const blob = item.getAsFile();
+        if (!blob) continue;
+
+        // Convert blob to File with proper name (like Telegram: screenshot_timestamp.png)
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const extension = item.type.split('/')[1] || 'png';
+        const fileName = `screenshot_${timestamp}.${extension}`;
+
+        const file = new File([blob], fileName, { type: item.type });
+
+        // Create preview for the pasted image
+        const preview = URL.createObjectURL(file);
+
+        // Set as attached file (same flow as file picker) - type 'photo' for inline display
+        setAttachedFile({ file, type: 'photo', preview, isImage: true });
+
+        // Focus back on textarea for caption
+        setTimeout(() => textareaRef.current?.focus(), 0);
+
+        return; // Only handle first image
+      }
+    }
+  };
+
   // TELEGRAM-STYLE: Fetch group members when component mounts (for groups only)
   useEffect(() => {
     if (!isGroup || !conversationId) {
@@ -1044,6 +1078,7 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
           ref={textareaRef}
           value={inputValue}
           onChange={handleMentionAwareInput}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             // TELEGRAM-STYLE: Handle mention navigation first
             if (showMentions && filteredMembers.length > 0) {
