@@ -502,7 +502,27 @@ export default function Home() {
   );
 
   // Fetch messages with caching for instant conversation switching
+  // 100x RELIABLE: Preserves optimistic messages during refresh to prevent flickering
   const fetchMessages = useCallback(async (conversationId: string, showLoading = true) => {
+    // Helper: Merge fresh messages with optimistic ones (temp-* or status: sending/sent without server ID)
+    const mergeWithOptimistic = (fresh: Message[], current: Message[]): Message[] => {
+      // Find optimistic messages (temp IDs or sending status)
+      const optimistic = current.filter(m =>
+        m.id.startsWith('temp-') || m.status === 'sending'
+      );
+
+      if (optimistic.length === 0) {
+        return fresh;
+      }
+
+      // Merge: fresh messages + optimistic ones not yet in fresh
+      const freshIds = new Set(fresh.map(m => m.id));
+      const uniqueOptimistic = optimistic.filter(m => !freshIds.has(m.id));
+
+      // Return fresh + optimistic at the end (they're newest)
+      return [...fresh, ...uniqueOptimistic];
+    };
+
     // Check cache first for instant display
     const cachedMessages = getCachedMessages(conversationId);
     if (cachedMessages) {
@@ -516,8 +536,12 @@ export default function Home() {
         .then(res => res.json())
         .then((data: MessagesResponse) => {
           const freshMessages = data.messages || [];
-          setCachedMessages(conversationId, freshMessages);
-          setMessages(freshMessages);
+          // 100x RELIABLE: Merge with current state to preserve optimistic messages
+          setMessages(current => {
+            const merged = mergeWithOptimistic(freshMessages, current);
+            setCachedMessages(conversationId, merged);
+            return merged;
+          });
           // Update pagination info
           setMessagesHasMore(data.hasMore);
           setMessagesNextCursor(data.nextCursor);
@@ -534,14 +558,18 @@ export default function Home() {
       const response = await fetch(`/api/conversations/${conversationId}/messages`);
       const data: MessagesResponse = await response.json();
       const msgs = data.messages || [];
-      setCachedMessages(conversationId, msgs);
-      setMessages(msgs);
+      // 100x RELIABLE: Merge with current optimistic messages
+      setMessages(current => {
+        const merged = mergeWithOptimistic(msgs, current);
+        setCachedMessages(conversationId, merged);
+        return merged;
+      });
       // Track pagination
       setMessagesHasMore(data.hasMore);
       setMessagesNextCursor(data.nextCursor);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
-      setMessages([]);
+      // Don't clear messages on error - keep showing what we have
       setMessagesHasMore(false);
       setMessagesNextCursor(null);
     } finally {
