@@ -906,6 +906,10 @@ export default function Home() {
   const handleReact = async (messageId: string, emoji: string, action: 'add' | 'remove') => {
     if (!selectedConversation) return;
 
+    // TELEGRAM RULE: Each user can only have 1 reaction per message (non-premium)
+    // Adding a new reaction REPLACES the old one
+    // In groups, multiple users can react with different emojis (aggregated: 👍3 ❤️2)
+
     // Optimistic update - immediately show reaction in UI
     setMessages((prev) =>
       prev.map((m) => {
@@ -913,24 +917,43 @@ export default function Home() {
 
         const currentReactions = m.reactions || [];
         const existingIdx = currentReactions.findIndex(r => r.emoji === emoji);
+        const userPreviousReactionIdx = currentReactions.findIndex(r => r.userReacted);
 
         if (action === 'add') {
-          if (existingIdx >= 0) {
-            // Increment count if reaction exists
-            const updated = [...currentReactions];
-            updated[existingIdx] = {
-              ...updated[existingIdx],
-              count: updated[existingIdx].count + 1,
+          let updated = [...currentReactions];
+
+          // First, remove user's previous reaction if exists (TELEGRAM RULE: 1 per user)
+          if (userPreviousReactionIdx >= 0 && userPreviousReactionIdx !== existingIdx) {
+            const prevReaction = updated[userPreviousReactionIdx];
+            if (prevReaction.count <= 1) {
+              // Remove the old reaction entirely
+              updated.splice(userPreviousReactionIdx, 1);
+            } else {
+              // Decrement count for old reaction
+              updated[userPreviousReactionIdx] = {
+                ...prevReaction,
+                count: prevReaction.count - 1,
+                userReacted: false,
+              };
+            }
+          }
+
+          // Recalculate existingIdx after potential removal
+          const newExistingIdx = updated.findIndex(r => r.emoji === emoji);
+
+          if (newExistingIdx >= 0) {
+            // Increment count for existing reaction of this emoji
+            updated[newExistingIdx] = {
+              ...updated[newExistingIdx],
+              count: updated[newExistingIdx].count + 1,
               userReacted: true,
             };
-            return { ...m, reactions: updated };
           } else {
             // Add new reaction
-            return {
-              ...m,
-              reactions: [...currentReactions, { emoji, count: 1, userReacted: true }],
-            };
+            updated.push({ emoji, count: 1, userReacted: true });
           }
+
+          return { ...m, reactions: updated.length > 0 ? updated : null };
         } else {
           // Remove reaction
           if (existingIdx >= 0) {
