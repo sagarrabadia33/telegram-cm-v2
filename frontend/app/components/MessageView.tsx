@@ -1416,15 +1416,20 @@ interface MessageBubbleProps {
 }
 
 function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: MessageBubbleProps) {
-  const [showPicker, setShowPicker] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [pickerHovered, setPickerHovered] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const leaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const isSent = message.sent;
   const text = message.text;
   const hasMedia = message.media && message.media.length > 0;
   const hasSender = isGroup && message.sender && !isSent;
   const hasReactions = message.reactions && message.reactions.length > 0;
+
+  // Reactions can be added to ANY message with an externalMessageId
+  // This includes text, images, documents, videos, voice messages, etc.
+  const canReact = onReact && message.externalMessageId;
 
   // Dynamic sizing based on message length - like WhatsApp/Telegram
   // Short messages: compact width
@@ -1462,42 +1467,79 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
     return name.slice(0, 2).toUpperCase();
   };
 
-  // Handle hover with delay (like Telegram desktop)
+  // TELEGRAM-STYLE HOVER: Show picker after short delay, hide with delay to allow moving to picker
   const handleMouseEnter = () => {
+    // Cancel any pending hide
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+    // Show after short delay (like Telegram desktop)
     hoverTimeoutRef.current = setTimeout(() => {
       setIsHovered(true);
-    }, 200);
+    }, 150);
   };
 
   const handleMouseLeave = () => {
+    // Cancel pending show
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
     }
-    setIsHovered(false);
-    setShowPicker(false);
+    // Delay hiding to allow mouse to move to picker
+    leaveTimeoutRef.current = setTimeout(() => {
+      if (!pickerHovered) {
+        setIsHovered(false);
+      }
+    }, 150);
   };
+
+  // Picker hover handlers - keep picker visible while interacting with it
+  const handlePickerEnter = () => {
+    setPickerHovered(true);
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+  };
+
+  const handlePickerLeave = () => {
+    setPickerHovered(false);
+    // Hide after leaving picker
+    leaveTimeoutRef.current = setTimeout(() => {
+      setIsHovered(false);
+    }, 100);
+  };
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (leaveTimeoutRef.current) clearTimeout(leaveTimeoutRef.current);
+    };
+  }, []);
 
   // Handle reaction selection
   const handleReact = (emoji: string) => {
-    if (!onReact || !message.externalMessageId) return;
+    if (!canReact) return;
 
     // Check if user already reacted with this emoji
     const existingReaction = message.reactions?.find(r => r.emoji === emoji && r.userReacted);
     const action = existingReaction ? 'remove' : 'add';
 
-    onReact(message.externalMessageId, emoji, action);
-    setShowPicker(false);
+    onReact!(message.externalMessageId!, emoji, action);
     setIsHovered(false);
+    setPickerHovered(false);
   };
 
   // Handle clicking existing reaction pill
   const handleReactionPillClick = (emoji: string) => {
-    if (!onReact || !message.externalMessageId) return;
+    if (!canReact) return;
 
     const existingReaction = message.reactions?.find(r => r.emoji === emoji);
     const action = existingReaction?.userReacted ? 'remove' : 'add';
 
-    onReact(message.externalMessageId, emoji, action);
+    onReact!(message.externalMessageId!, emoji, action);
   };
 
   return (
@@ -1543,50 +1585,58 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
       )}
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
         {/* REACTION PICKER - Shows on hover (Telegram-style) */}
-        {isHovered && onReact && message.externalMessageId && (
+        {/* Works for ALL message types: text, images, documents, videos, voice, etc. */}
+        {isHovered && canReact && (
           <div
+            onMouseEnter={handlePickerEnter}
+            onMouseLeave={handlePickerLeave}
             style={{
               position: 'absolute',
               bottom: '100%',
               [isSent ? 'right' : 'left']: '0',
               marginBottom: '4px',
-              background: 'var(--bg-primary)',
-              borderRadius: '20px',
-              padding: '6px 8px',
-              display: 'flex',
-              gap: '2px',
-              boxShadow: '0 2px 12px rgba(0, 0, 0, 0.15)',
-              border: '1px solid var(--border-secondary)',
+              paddingBottom: '8px', // Extra padding to bridge gap between picker and message
               zIndex: 10,
-              animation: 'fadeSlideIn 100ms ease',
             }}
           >
-            {QUICK_EMOJIS.map((emoji) => (
-              <button
-                key={emoji}
-                onClick={() => handleReact(emoji)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: '4px 6px',
-                  borderRadius: '8px',
-                  fontSize: '20px',
-                  lineHeight: 1,
-                  transition: 'transform 100ms ease, background 100ms ease',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.transform = 'scale(1.2)';
-                  e.currentTarget.style.background = 'var(--bg-hover)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.transform = 'scale(1)';
-                  e.currentTarget.style.background = 'transparent';
-                }}
-              >
-                {emoji}
-              </button>
-            ))}
+            <div
+              style={{
+                background: 'var(--bg-primary)',
+                borderRadius: '24px',
+                padding: '6px 10px',
+                display: 'flex',
+                gap: '2px',
+                boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05)',
+                animation: 'fadeSlideIn 120ms ease-out',
+              }}
+            >
+              {QUICK_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={() => handleReact(emoji)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '6px 8px',
+                    borderRadius: '12px',
+                    fontSize: '22px',
+                    lineHeight: 1,
+                    transition: 'transform 80ms ease, background 80ms ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.25)';
+                    e.currentTarget.style.background = 'var(--bg-hover)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
