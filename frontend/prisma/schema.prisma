@@ -143,6 +143,7 @@ model Conversation {
   messages            Message[]
   notes               ConversationNote[]
   outgoingMessages    OutgoingMessage[]
+  outgoingReactions   OutgoingReaction[]
   telegramChat        TelegramChat?
 
   @@unique([source, externalChatId])
@@ -177,6 +178,7 @@ model Message {
   hasAttachments    Boolean                  @default(false)
   attachments       Json?
   metadata          Json?
+  reactions         Json?                    // [{emoji: "👍", count: 2, userReacted: true}, ...]
   createdAt         DateTime                 @default(now())
   search_vector     Unsupported("tsvector")?
   campaignMessage   CampaignMessage?
@@ -485,6 +487,40 @@ model OutgoingMessage {
   @@index([conversationId])
   @@index([createdAt])
   @@index([scheduledFor])
+  @@index([lockedBy, lockedAt])
+}
+
+// LINEAR-STYLE OUTBOX: Reliable reaction sending queue
+// Reactions are stored here first, then processed by the Telegram worker
+// This ensures 100% delivery even if the worker crashes
+model OutgoingReaction {
+  id             String    @id @default(cuid())
+  conversationId String
+  messageId      String    // External Telegram message ID to react to
+  emoji          String    // Reaction emoji (e.g., "👍", "❤️", "🔥")
+  action         String    @default("add")  // "add" or "remove"
+
+  // Delivery status (Linear-style state machine)
+  status         String    @default("pending")  // 'pending' | 'sending' | 'sent' | 'failed'
+  retryCount     Int       @default(0)
+  maxRetries     Int       @default(3)
+  errorMessage   String?
+
+  // Processing metadata
+  lockedBy       String?
+  lockedAt       DateTime?
+
+  // Timestamps
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  sentAt         DateTime?
+
+  // Relations
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([conversationId])
+  @@index([createdAt])
   @@index([lockedBy, lockedAt])
 }
 

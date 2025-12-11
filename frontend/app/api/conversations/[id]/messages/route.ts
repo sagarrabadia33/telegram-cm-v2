@@ -184,6 +184,7 @@ export async function GET(
 
       return {
         id: msg.id,
+        externalMessageId: msg.externalMessageId, // Telegram message ID for reactions
         text: msg.body || '',
         sent: msg.direction === 'outbound',
         time: msg.sentAt.toISOString(),
@@ -193,6 +194,7 @@ export async function GET(
         contentType: msg.contentType,
         media: media.length > 0 ? media : null,
         sender,
+        reactions: null, // TODO: Parse from msg.reactions when stored
       };
     });
 

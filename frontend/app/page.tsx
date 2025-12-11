@@ -902,6 +902,77 @@ export default function Home() {
     }
   };
 
+  // Handle sending reactions to messages (Telegram-style reactions)
+  const handleReact = async (messageId: string, emoji: string, action: 'add' | 'remove') => {
+    if (!selectedConversation) return;
+
+    // Optimistic update - immediately show reaction in UI
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.externalMessageId !== messageId) return m;
+
+        const currentReactions = m.reactions || [];
+        const existingIdx = currentReactions.findIndex(r => r.emoji === emoji);
+
+        if (action === 'add') {
+          if (existingIdx >= 0) {
+            // Increment count if reaction exists
+            const updated = [...currentReactions];
+            updated[existingIdx] = {
+              ...updated[existingIdx],
+              count: updated[existingIdx].count + 1,
+              userReacted: true,
+            };
+            return { ...m, reactions: updated };
+          } else {
+            // Add new reaction
+            return {
+              ...m,
+              reactions: [...currentReactions, { emoji, count: 1, userReacted: true }],
+            };
+          }
+        } else {
+          // Remove reaction
+          if (existingIdx >= 0) {
+            const updated = [...currentReactions];
+            if (updated[existingIdx].count <= 1) {
+              // Remove entirely if count would be 0
+              updated.splice(existingIdx, 1);
+            } else {
+              // Decrement count
+              updated[existingIdx] = {
+                ...updated[existingIdx],
+                count: updated[existingIdx].count - 1,
+                userReacted: false,
+              };
+            }
+            return { ...m, reactions: updated.length > 0 ? updated : null };
+          }
+          return m;
+        }
+      })
+    );
+
+    try {
+      // Call the reactions API (Linear-style outbox pattern)
+      const response = await fetch(`/api/conversations/${selectedConversation.id}/reactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId, emoji, action }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send reaction');
+      }
+
+      console.log(`[REACTION] Queued ${action} ${emoji} on message ${messageId}`);
+    } catch (error) {
+      console.error('Failed to send reaction:', error);
+      // Revert optimistic update on failure
+      // For simplicity, we don't revert here - the UI will reconcile on next refresh
+    }
+  };
+
   // Handle sending messages with attachments (Linear-style outbox pattern)
   const handleSendMessageWithAttachment = async (
     text: string,
@@ -1329,6 +1400,7 @@ export default function Home() {
             onSendMessage={handleSendMessage}
             onSendWithAttachment={handleSendMessageWithAttachment}
             onTagsChange={handleTagsChange}
+            onReact={handleReact}
             highlightMessageId={highlightMessageId}
             hasMore={messagesHasMore}
             isLoadingMore={messagesLoadingMore}

@@ -2,10 +2,13 @@
 
 import { useState, useRef, useLayoutEffect, useEffect } from 'react';
 import { SendIcon, AttachmentIcon, EmojiIcon, MoreIcon, SingleCheckIcon, DoubleCheckIcon, ClockIcon, DownloadIcon } from './Icons';
-import { Conversation, Message } from '../types';
+import { Conversation, Message, MessageReaction } from '../types';
 import { formatMessageTime, formatDate } from '../lib/utils';
 import { ConversationSummary } from './ConversationSummary';
 import { TagSelector, Tag } from './TagSelector';
+
+// Telegram's standard quick-access reaction emojis
+const QUICK_EMOJIS = ['👍', '❤️', '🔥', '🙏', '😍', '😂', '👎'];
 
 interface MessageViewProps {
   conversation: Conversation | null;
@@ -13,6 +16,7 @@ interface MessageViewProps {
   onSendMessage: (text: string) => void;
   onSendWithAttachment?: (text: string, attachment: { type: string; url: string; filename?: string; mimeType: string }) => void;
   onTagsChange?: (conversationId: string, tags: Tag[]) => void;
+  onReact?: (messageId: string, emoji: string, action: 'add' | 'remove') => void;
   highlightMessageId?: string | null;
   // Infinite scroll for older messages
   hasMore?: boolean;
@@ -26,6 +30,7 @@ export default function MessageView({
   onSendMessage,
   onSendWithAttachment,
   onTagsChange,
+  onReact,
   highlightMessageId,
   hasMore = false,
   isLoadingMore = false,
@@ -394,6 +399,7 @@ export default function MessageView({
                   message={message}
                   isGroup={isGroup}
                   isHighlighted={message.id === highlightMessageId}
+                  onReact={onReact}
                   onRef={(el) => {
                     if (el) {
                       messageRefs.current.set(message.id, el);
@@ -1405,14 +1411,20 @@ interface MessageBubbleProps {
   message: Message;
   isGroup: boolean;
   isHighlighted?: boolean;
+  onReact?: (messageId: string, emoji: string, action: 'add' | 'remove') => void;
   onRef?: (el: HTMLDivElement | null) => void;
 }
 
-function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubbleProps) {
+function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: MessageBubbleProps) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const isSent = message.sent;
   const text = message.text;
   const hasMedia = message.media && message.media.length > 0;
   const hasSender = isGroup && message.sender && !isSent;
+  const hasReactions = message.reactions && message.reactions.length > 0;
 
   // Dynamic sizing based on message length - like WhatsApp/Telegram
   // Short messages: compact width
@@ -1450,9 +1462,49 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
     return name.slice(0, 2).toUpperCase();
   };
 
+  // Handle hover with delay (like Telegram desktop)
+  const handleMouseEnter = () => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setIsHovered(true);
+    }, 200);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    setIsHovered(false);
+    setShowPicker(false);
+  };
+
+  // Handle reaction selection
+  const handleReact = (emoji: string) => {
+    if (!onReact || !message.externalMessageId) return;
+
+    // Check if user already reacted with this emoji
+    const existingReaction = message.reactions?.find(r => r.emoji === emoji && r.userReacted);
+    const action = existingReaction ? 'remove' : 'add';
+
+    onReact(message.externalMessageId, emoji, action);
+    setShowPicker(false);
+    setIsHovered(false);
+  };
+
+  // Handle clicking existing reaction pill
+  const handleReactionPillClick = (emoji: string) => {
+    if (!onReact || !message.externalMessageId) return;
+
+    const existingReaction = message.reactions?.find(r => r.emoji === emoji);
+    const action = existingReaction?.userReacted ? 'remove' : 'add';
+
+    onReact(message.externalMessageId, emoji, action);
+  };
+
   return (
     <div
       ref={onRef}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       style={{
         display: 'flex',
         gap: 'var(--space-2)',
@@ -1468,6 +1520,7 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
         background: isHighlighted ? 'rgba(250, 204, 21, 0.15)' : 'transparent',
         boxShadow: isHighlighted ? '0 0 0 2px rgba(250, 204, 21, 0.4)' : 'none',
         transition: 'background 300ms ease, box-shadow 300ms ease',
+        position: 'relative',
       }}>
       {/* Mini avatar for group messages (Telegram/WhatsApp style) */}
       {hasSender && (
@@ -1488,7 +1541,55 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
           {getSenderInitials(message.sender!.name)}
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
+        {/* REACTION PICKER - Shows on hover (Telegram-style) */}
+        {isHovered && onReact && message.externalMessageId && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: '100%',
+              [isSent ? 'right' : 'left']: '0',
+              marginBottom: '4px',
+              background: 'var(--bg-primary)',
+              borderRadius: '20px',
+              padding: '6px 8px',
+              display: 'flex',
+              gap: '2px',
+              boxShadow: '0 2px 12px rgba(0, 0, 0, 0.15)',
+              border: '1px solid var(--border-secondary)',
+              zIndex: 10,
+              animation: 'fadeSlideIn 100ms ease',
+            }}
+          >
+            {QUICK_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                onClick={() => handleReact(emoji)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '4px 6px',
+                  borderRadius: '8px',
+                  fontSize: '20px',
+                  lineHeight: 1,
+                  transition: 'transform 100ms ease, background 100ms ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'scale(1.2)';
+                  e.currentTarget.style.background = 'var(--bg-hover)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'scale(1)';
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div style={{
           // Tighter padding: Linear-style minimal spacing
           padding: hasMedia ? '0' : (isShortMessage ? '6px 10px' : '8px 12px'),
@@ -1551,6 +1652,47 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
           </div>
         )}
         </div>
+
+        {/* REACTION PILLS - Show existing reactions below message */}
+        {hasReactions && (
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '4px',
+            marginTop: '4px',
+            justifyContent: isSent ? 'flex-end' : 'flex-start',
+          }}>
+            {message.reactions!.map((reaction) => (
+              <button
+                key={reaction.emoji}
+                onClick={() => handleReactionPillClick(reaction.emoji)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  border: reaction.userReacted ? '1px solid var(--accent-primary)' : '1px solid var(--border-secondary)',
+                  background: reaction.userReacted ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  transition: 'transform 100ms ease',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+              >
+                <span style={{ fontSize: '14px' }}>{reaction.emoji}</span>
+                <span style={{
+                  color: reaction.userReacted ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                  fontWeight: reaction.userReacted ? 600 : 400,
+                }}>
+                  {reaction.count}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div style={{
           display: 'flex',
           alignItems: 'center',

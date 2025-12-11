@@ -26,8 +26,15 @@ export interface Conversation {
   lastSyncedAt?: string | null; // When this conversation was last synced
 }
 
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  userReacted: boolean;
+}
+
 export interface Message {
   id: string;
+  externalMessageId?: string; // Telegram message ID for reactions
   text: string;
   sent: boolean;
   time: string;
@@ -41,6 +48,7 @@ export interface Message {
     name: string;
     initials: string;
   } | null;
+  reactions?: MessageReaction[] | null;
 }
 
 export interface MessagesResponse {
