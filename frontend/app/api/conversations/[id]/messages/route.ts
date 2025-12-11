@@ -54,6 +54,7 @@ export async function GET(
         hasAttachments: true,
         attachments: true,
         metadata: true, // Include metadata for sender fallback
+        reactions: true, // Reaction pills (emoji + count + userReacted)
         // Include sender info for group messages
         contact: isGroup ? {
           select: {
@@ -194,7 +195,7 @@ export async function GET(
         contentType: msg.contentType,
         media: media.length > 0 ? media : null,
         sender,
-        reactions: null, // TODO: Parse from msg.reactions when stored
+        reactions: msg.reactions as Array<{emoji: string; count: number; userReacted: boolean}> | null
       };
     });
 
