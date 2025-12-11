@@ -306,6 +306,57 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Telegram-style message send animation */
+@keyframes messageSend {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Smooth attachment preview appear animation */
+@keyframes attachmentAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0.95);
+    max-height: 0;
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    max-height: 200px;
+  }
+}
+
+/* Pulse animation for uploading state */
+@keyframes uploadPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Apply to new messages */
+.message-bubble-new {
+  animation: messageSend 0.2s ease-out forwards;
+}
+
+/* Apply to attachment previews */
+.attachment-preview {
+  animation: attachmentAppear 0.25s ease-out forwards;
+}
+
+/* Apply to uploading items */
+.uploading-item {
+  animation: uploadPulse 1.5s ease-in-out infinite;
+}
+
 /* ============================================
  * LINEAR-STYLE TOOLTIP BASE STYLES
  * Use .linear-tooltip class for consistent styling

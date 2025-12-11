@@ -788,18 +788,20 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-      {/* Attachment preview with progress and cancel */}
+      {/* Attachment preview with progress and cancel - TELEGRAM-STYLE SMOOTH ANIMATION */}
       {attachedFile && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          padding: 'var(--space-2)',
-          background: 'var(--bg-hover)',
-          borderRadius: 'var(--radius-md)',
-          position: 'relative',
-          overflow: 'hidden',
-        }}>
+        <div
+          className="attachment-preview"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            padding: 'var(--space-2)',
+            background: 'var(--bg-hover)',
+            borderRadius: 'var(--radius-md)',
+            position: 'relative',
+            overflow: 'hidden',
+          }}>
           {/* Upload progress bar */}
           {isUploading && (
             <div style={{
@@ -1083,12 +1085,7 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
           className="placeholder:text-[var(--text-quaternary)]"
         />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
-          <IconButton title="Emoji">
-            <EmojiIcon style={{ width: '18px', height: '18px' }} />
-          </IconButton>
-          <SendButton onClick={handleSendClick} disabled={!canSend} loading={isUploading} />
-        </div>
+        <SendButton onClick={handleSendClick} disabled={!canSend} loading={isUploading} />
       </div>
     </div>
   );
