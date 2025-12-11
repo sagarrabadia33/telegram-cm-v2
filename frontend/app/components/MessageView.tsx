@@ -1210,6 +1210,197 @@ function IconButton({ children, title, onClick }: IconButtonProps) {
   );
 }
 
+/**
+ * MediaItem - Individual media item with its own loading/error state
+ * This ensures each image manages its own state independently
+ */
+interface MediaItemProps {
+  item: {
+    type: string;
+    url: string;
+    name?: string;
+    mimeType?: string;
+    size?: number;
+    thumbnail?: string;
+  };
+  isSent: boolean;
+  hasText: boolean;
+  index: number;
+}
+
+function MediaItem({ item, isSent, hasText, index }: MediaItemProps) {
+  const [imageLoading, setImageLoading] = useState(true);
+  const [imageError, setImageError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  // Determine if this is an image that should be displayed inline
+  const isBase64Image = item.url?.startsWith('data:image/');
+  const isImage = isBase64Image || item.type === 'photos' || item.type === 'photo' ||
+                  (item.mimeType && item.mimeType.startsWith('image/'));
+  const isVideo = item.type === 'video' || item.type === 'videos' ||
+                  (item.mimeType && item.mimeType.startsWith('video/'));
+  const displayName = item.name || (isImage ? 'Photo' : isVideo ? 'Video' : 'Document');
+  const thumbnail = item.thumbnail;
+
+  // Retry handler - retry up to 2 times on error
+  const handleError = () => {
+    if (retryCount < 2) {
+      setRetryCount(prev => prev + 1);
+      setImageLoading(true);
+      setImageError(false);
+    } else {
+      setImageError(true);
+      setImageLoading(false);
+    }
+  };
+
+  // Add retry query param to force reload
+  const imageUrl = retryCount > 0 ? `${item.url}&retry=${retryCount}` : item.url;
+
+  if (isImage && !imageError) {
+    return (
+      <div key={index} style={{ marginBottom: hasText ? 'var(--space-2)' : 0 }}>
+        {/* TELEGRAM-STYLE INLINE IMAGE: Blur preview -> sharp image transition */}
+        <div style={{ position: 'relative', cursor: 'pointer' }}>
+          {/* Blur preview thumbnail (shown while loading full image) */}
+          {imageLoading && thumbnail && (
+            <img
+              src={thumbnail}
+              alt=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                borderRadius: hasText ? '0' : 'var(--radius-lg)',
+                filter: 'blur(10px)',
+                transform: 'scale(1.1)',
+              }}
+            />
+          )}
+          {/* Loading spinner (shown if no thumbnail or while thumbnail loads) */}
+          {imageLoading && !thumbnail && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
+              borderRadius: hasText ? '0' : 'var(--radius-lg)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minHeight: '100px',
+              minWidth: '150px',
+            }}>
+              <div style={{
+                width: '24px',
+                height: '24px',
+                border: '2px solid var(--text-quaternary)',
+                borderTopColor: 'transparent',
+                borderRadius: '50%',
+                animation: 'spin 0.8s linear infinite',
+              }} />
+            </div>
+          )}
+          {/* Loading indicator overlay on thumbnail */}
+          {imageLoading && thumbnail && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'rgba(0,0,0,0.3)',
+              borderRadius: hasText ? '0' : 'var(--radius-lg)',
+            }}>
+              <div style={{
+                width: '32px',
+                height: '32px',
+                border: '2px solid rgba(255,255,255,0.5)',
+                borderTopColor: 'white',
+                borderRadius: '50%',
+                animation: 'spin 0.8s linear infinite',
+              }} />
+            </div>
+          )}
+          {/* Full resolution image (loads on-demand from Telegram) */}
+          <img
+            src={imageUrl}
+            alt={displayName}
+            onLoad={() => setImageLoading(false)}
+            onError={handleError}
+            onClick={() => window.open(item.url, '_blank')}
+            style={{
+              maxWidth: '100%',
+              maxHeight: '400px',
+              borderRadius: hasText ? '0' : 'var(--radius-lg)',
+              display: 'block',
+              opacity: imageLoading ? 0 : 1,
+              transition: 'opacity 300ms ease',
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // DOCUMENT/FILE/VIDEO or failed image: Show with filename and download link
+  return (
+    <div key={index} style={{ marginBottom: hasText ? 'var(--space-2)' : 0 }}>
+      <a
+        href={item.url}
+        download={displayName}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--space-2)',
+          padding: 'var(--space-3)',
+          background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
+          borderRadius: 'var(--radius-md)',
+          textDecoration: 'none',
+          cursor: 'pointer',
+          transition: 'background 150ms ease',
+        }}
+        onMouseOver={(e) => e.currentTarget.style.background = isSent ? 'rgba(255,255,255,0.2)' : 'var(--bg-hover)'}
+        onMouseOut={(e) => e.currentTarget.style.background = isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)'}
+      >
+        <div style={{
+          width: '40px',
+          height: '40px',
+          borderRadius: 'var(--radius-md)',
+          background: isSent ? 'rgba(255,255,255,0.15)' : 'var(--accent-subtle)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}>
+          <AttachmentIcon style={{ width: '20px', height: '20px', color: isSent ? 'rgba(255,255,255,0.9)' : 'var(--accent-primary)' }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            fontSize: 'var(--text-sm)',
+            fontWeight: 500,
+            color: isSent ? 'white' : 'var(--text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {displayName}
+          </div>
+          <div style={{
+            fontSize: 'var(--text-xs)',
+            color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)',
+          }}>
+            {isImage && imageError ? 'Image failed to load' : isVideo ? 'Video' : 'Document'} • Click to download
+          </div>
+        </div>
+        <DownloadIcon style={{ width: '16px', height: '16px', color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }} />
+      </a>
+    </div>
+  );
+}
+
 interface MessageBubbleProps {
   message: Message;
   isGroup: boolean;
@@ -1218,8 +1409,6 @@ interface MessageBubbleProps {
 }
 
 function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubbleProps) {
-  const [imageError, setImageError] = useState(false);
-  const [imageLoading, setImageLoading] = useState(true);
   const isSent = message.sent;
   const text = message.text;
   const hasMedia = message.media && message.media.length > 0;
@@ -1327,161 +1516,16 @@ function MessageBubble({ message, isGroup, isHighlighted, onRef }: MessageBubble
             </div>
           )}
 
-        {/* Media attachments (images/documents) - TELEGRAM-STYLE WITH BLUR PREVIEW */}
-        {hasMedia && message.media!.map((item, index) => {
-          // Determine if this is an image that should be displayed inline
-          // Check: type is photo/photos OR mimeType starts with image/
-          // Also detect base64 data URLs which start with "data:image/"
-          const isBase64Image = item.url?.startsWith('data:image/');
-          const hasThumbnail = !!(item as {thumbnail?: string}).thumbnail;
-          const isImage = isBase64Image || item.type === 'photos' || item.type === 'photo' ||
-                          (item.mimeType && item.mimeType.startsWith('image/'));
-          const isVideo = item.type === 'video' || item.type === 'videos' ||
-                          (item.mimeType && item.mimeType.startsWith('video/'));
-          const displayName = item.name || (isImage ? 'Photo' : isVideo ? 'Video' : 'Document');
-
-          // Get thumbnail for blur preview (if available)
-          const thumbnail = (item as {thumbnail?: string}).thumbnail;
-
-          return (
-            <div key={index} style={{ marginBottom: text ? 'var(--space-2)' : 0 }}>
-              {isImage && !imageError ? (
-                // TELEGRAM-STYLE INLINE IMAGE: Blur preview -> sharp image transition
-                <div style={{ position: 'relative', cursor: 'pointer' }}>
-                  {/* Blur preview thumbnail (shown while loading full image) */}
-                  {imageLoading && thumbnail && (
-                    <img
-                      src={thumbnail}
-                      alt=""
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover',
-                        borderRadius: text ? '0' : 'var(--radius-lg)',
-                        filter: 'blur(10px)',
-                        transform: 'scale(1.1)', // Prevent blur edges from showing
-                      }}
-                    />
-                  )}
-                  {/* Loading spinner (shown if no thumbnail or while thumbnail loads) */}
-                  {imageLoading && !thumbnail && (
-                    <div style={{
-                      position: 'absolute',
-                      inset: 0,
-                      background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
-                      borderRadius: text ? '0' : 'var(--radius-lg)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      minHeight: '100px',
-                      minWidth: '150px',
-                    }}>
-                      <div style={{
-                        width: '24px',
-                        height: '24px',
-                        border: '2px solid var(--text-quaternary)',
-                        borderTopColor: 'transparent',
-                        borderRadius: '50%',
-                        animation: 'spin 0.8s linear infinite',
-                      }} />
-                    </div>
-                  )}
-                  {/* Loading indicator overlay on thumbnail */}
-                  {imageLoading && thumbnail && (
-                    <div style={{
-                      position: 'absolute',
-                      inset: 0,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      background: 'rgba(0,0,0,0.3)',
-                      borderRadius: text ? '0' : 'var(--radius-lg)',
-                    }}>
-                      <div style={{
-                        width: '32px',
-                        height: '32px',
-                        border: '2px solid rgba(255,255,255,0.5)',
-                        borderTopColor: 'white',
-                        borderRadius: '50%',
-                        animation: 'spin 0.8s linear infinite',
-                      }} />
-                    </div>
-                  )}
-                  {/* Full resolution image (loads on-demand from Telegram) */}
-                  <img
-                    src={item.url}
-                    alt={displayName}
-                    onLoad={() => setImageLoading(false)}
-                    onError={() => { setImageError(true); setImageLoading(false); }}
-                    onClick={() => window.open(item.url, '_blank')}
-                    style={{
-                      maxWidth: '100%',
-                      maxHeight: '400px',
-                      borderRadius: text ? '0' : 'var(--radius-lg)',
-                      display: 'block',
-                      opacity: imageLoading ? 0 : 1,
-                      transition: 'opacity 300ms ease',
-                    }}
-                  />
-                </div>
-              ) : (
-                // DOCUMENT/FILE: Show with filename and download link
-                <a
-                  href={item.url}
-                  download={displayName}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                    padding: 'var(--space-3)',
-                    background: isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)',
-                    borderRadius: 'var(--radius-md)',
-                    textDecoration: 'none',
-                    cursor: 'pointer',
-                    transition: 'background 150ms ease',
-                  }}
-                  onMouseOver={(e) => e.currentTarget.style.background = isSent ? 'rgba(255,255,255,0.2)' : 'var(--bg-hover)'}
-                  onMouseOut={(e) => e.currentTarget.style.background = isSent ? 'rgba(255,255,255,0.1)' : 'var(--bg-tertiary)'}
-                >
-                  <div style={{
-                    width: '40px',
-                    height: '40px',
-                    borderRadius: 'var(--radius-md)',
-                    background: isSent ? 'rgba(255,255,255,0.15)' : 'var(--accent-subtle)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}>
-                    <AttachmentIcon style={{ width: '20px', height: '20px', color: isSent ? 'rgba(255,255,255,0.9)' : 'var(--accent-primary)' }} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      fontSize: 'var(--text-sm)',
-                      fontWeight: 500,
-                      color: isSent ? 'white' : 'var(--text-primary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {displayName}
-                    </div>
-                    <div style={{
-                      fontSize: 'var(--text-xs)',
-                      color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)',
-                    }}>
-                      {isVideo ? 'Video' : 'Document'} • Click to download
-                    </div>
-                  </div>
-                  <DownloadIcon style={{ width: '16px', height: '16px', color: isSent ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }} />
-                </a>
-              )}
-            </div>
-          );
-        })}
+        {/* Media attachments - Each MediaItem manages its own loading/error state */}
+        {hasMedia && message.media!.map((item, index) => (
+          <MediaItem
+            key={index}
+            item={item}
+            isSent={isSent}
+            hasText={!!text}
+            index={index}
+          />
+        ))}
 
         {/* Show placeholder for messages with hasAttachments but no media data (not yet downloaded) */}
         {!hasMedia && message.contentType === 'media' && (

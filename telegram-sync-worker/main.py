@@ -10,14 +10,17 @@ ARCHITECTURE:
 3. Realtime listener with automatic recovery
 4. Periodic session backups
 5. Graceful shutdown handling
+6. On-demand media download endpoint
 
 RELIABILITY GUARANTEES:
 - Auto-restart on crash (Railway health check)
 - Session persistence (Railway Volume)
 - Database-backed distributed locking (prevents duplicate listeners)
 - Catch-up sync on startup (no missed messages)
+- On-demand media download from Telegram API
 
 Author: telegram-crm-v2
+Build: v2.4-20251210 (on-demand media download)
 """
 
 import os
@@ -25,9 +28,11 @@ import sys
 import asyncio
 import signal
 import json
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
+from urllib.parse import parse_qs
 from aiohttp import web
 
 # Import our modules
@@ -149,11 +154,131 @@ async def status_handler(request):
     )
 
 
+async def download_handler(request):
+    """
+    On-demand media download from Telegram.
+
+    Query params:
+    - telegram_message_id: The Telegram message ID containing media
+    - telegram_chat_id: The Telegram chat/channel/user ID
+
+    Returns the media file as binary with appropriate Content-Type.
+    """
+    global worker_state
+
+    try:
+        # Parse query parameters
+        telegram_message_id = request.query.get('telegram_message_id')
+        telegram_chat_id = request.query.get('telegram_chat_id')
+
+        if not telegram_message_id or not telegram_chat_id:
+            return web.Response(
+                status=400,
+                text=json.dumps({'error': 'Missing telegram_message_id or telegram_chat_id'}),
+                content_type='application/json'
+            )
+
+        telegram_message_id = int(telegram_message_id)
+        telegram_chat_id = int(telegram_chat_id)
+
+        # Get the listener which has the Telegram client
+        listener = worker_state.get('listener')
+        if not listener or not listener.client:
+            return web.Response(
+                status=503,
+                text=json.dumps({'error': 'Telegram client not ready'}),
+                content_type='application/json'
+            )
+
+        # Ensure client is connected
+        if not listener.client.is_connected():
+            return web.Response(
+                status=503,
+                text=json.dumps({'error': 'Telegram client not connected'}),
+                content_type='application/json'
+            )
+
+        client = listener.client
+
+        # Fetch the message from Telegram
+        try:
+            # Get the entity (chat/user/channel) first
+            entity = await client.get_entity(telegram_chat_id)
+
+            # Get the specific message
+            messages = await client.get_messages(entity, ids=telegram_message_id)
+            message = messages if not isinstance(messages, list) else (messages[0] if messages else None)
+
+            if not message or not message.media:
+                return web.Response(
+                    status=404,
+                    text=json.dumps({'error': 'Message or media not found'}),
+                    content_type='application/json'
+                )
+
+            # Download the media to memory
+            media_bytes = await client.download_media(message, file=bytes)
+
+            if not media_bytes:
+                return web.Response(
+                    status=404,
+                    text=json.dumps({'error': 'Failed to download media'}),
+                    content_type='application/json'
+                )
+
+            # Determine content type and filename
+            content_type = 'application/octet-stream'
+            filename = f'media_{telegram_message_id}'
+
+            if hasattr(message.media, 'photo'):
+                content_type = 'image/jpeg'
+                filename = f'photo_{telegram_message_id}.jpg'
+            elif hasattr(message.media, 'document'):
+                doc = message.media.document
+                # Try to get mime type from document
+                if hasattr(doc, 'mime_type') and doc.mime_type:
+                    content_type = doc.mime_type
+                # Try to get filename from attributes
+                if hasattr(doc, 'attributes'):
+                    for attr in doc.attributes:
+                        if hasattr(attr, 'file_name') and attr.file_name:
+                            filename = attr.file_name
+                            break
+
+            log(f"[DOWNLOAD] Served media: chat={telegram_chat_id}, msg={telegram_message_id}, size={len(media_bytes)}")
+
+            return web.Response(
+                body=media_bytes,
+                content_type=content_type,
+                headers={
+                    'Content-Disposition': f'inline; filename="{filename}"',
+                    'Cache-Control': 'public, max-age=86400',  # Cache for 24 hours
+                }
+            )
+
+        except ValueError as e:
+            log(f"[DOWNLOAD] Entity not found: {e}", level='WARN')
+            return web.Response(
+                status=404,
+                text=json.dumps({'error': f'Chat not found: {telegram_chat_id}'}),
+                content_type='application/json'
+            )
+
+    except Exception as e:
+        log(f"[DOWNLOAD] Error: {e}", level='ERROR')
+        return web.Response(
+            status=500,
+            text=json.dumps({'error': str(e)}),
+            content_type='application/json'
+        )
+
+
 async def start_health_server():
-    """Start the HTTP health check server."""
-    app = web.Application()
+    """Start the HTTP health check server with download endpoint."""
+    app = web.Application(client_max_size=50*1024*1024)  # 50MB max for downloads
     app.router.add_get('/health', health_handler)
     app.router.add_get('/status', status_handler)
+    app.router.add_get('/download', download_handler)  # On-demand media download
     app.router.add_get('/', health_handler)  # Default route
 
     runner = web.AppRunner(app)
@@ -161,6 +286,7 @@ async def start_health_server():
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
     log(f"Health server started on port {PORT}")
+    log(f"Media download endpoint: /download?telegram_chat_id=X&telegram_message_id=Y")
 
 
 # =============================================================================
