@@ -76,8 +76,8 @@ function useMediaQuery(query: string): boolean {
 }
 
 export default function Home() {
-  // View mode: messages or contacts
-  const [viewMode, setViewMode] = useState<ViewMode>('messages');
+  // View mode: messages or contacts (default to contacts for CRM-first experience)
+  const [viewMode, setViewMode] = useState<ViewMode>('contacts');
 
   // Mobile-specific state
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>('conversations');
