@@ -124,8 +124,8 @@ function getUrgencyBgColor(status: string | null, daysInactive: number): string 
   }
 }
 
-// AI Action types
-type AiAction = 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | null;
+// AI Action types (includes both Customer and Partner actions)
+type AiAction = 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | 'Send Intro' | 'Follow Up' | 'Nurture' | null;
 
 // Get action label - PRIORITY: Use AI's actual action recommendation when available
 function getActionLabelFromAI(aiAction: AiAction, status: string | null, daysInactive: number): string {
