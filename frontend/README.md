@@ -1,13 +1,14 @@
 # Telegram CRM Frontend
 
-A Next.js 16 application providing a Telegram CRM with an AI-powered Inbox Zero dashboard.
+A Next.js 16 application providing a Telegram CRM with AI-powered conversation intelligence for Customer Groups and Partners.
 
 ## Tech Stack
 
 - **Framework**: Next.js 16 with App Router
-- **Database**: PostgreSQL with Prisma ORM
-- **AI**: Anthropic Claude (Sonnet 4 & Haiku 3.5)
+- **Database**: PostgreSQL (Azure) with Prisma ORM
+- **AI**: Anthropic Claude Sonnet 4 (`claude-sonnet-4-20250514`)
 - **Styling**: CSS Variables (Linear-inspired dark theme)
+- **Deployment**: Railway (frontend) + Python sync worker
 
 ## Getting Started
 
@@ -22,7 +23,9 @@ npx prisma generate
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
+Open [http://localhost:3001](http://localhost:3001) (port 3001 if 3000 is occupied)
+
+**Default View**: Contacts (CRM-first experience)
 
 ## Architecture Overview
 
@@ -155,26 +158,38 @@ Generates contextually appropriate replies:
 
 ```
 app/
-├── page.tsx                          # Main page with view modes (home/messages/contacts)
+├── page.tsx                          # Main page (default: Contacts view)
 ├── lib/
 │   ├── prisma.ts                     # Prisma client singleton
 │   └── inbox-zero/
 │       ├── prompts.ts                # AI prompts (triage, draft, commitment)
 │       └── context-resolver.ts       # Cross-conversation entity resolution
 ├── api/
+│   ├── ai/
+│   │   ├── analyze-conversations/
+│   │   │   └── route.ts              # POST AI analysis (Customer Groups + Partners)
+│   │   └── auto-analyze/
+│   │       └── route.ts              # GET auto-triggered analysis
+│   ├── conversations/
+│   │   ├── route.ts                  # GET conversations list
+│   │   └── [id]/
+│   │       ├── route.ts              # GET/PATCH single conversation
+│   │       ├── notes/route.ts        # GET/POST notes (triggers re-analysis)
+│   │       ├── send/route.ts         # POST send message
+│   │       ├── summary/route.ts      # GET AI summary
+│   │       └── tags/route.ts         # GET/POST tags
+│   ├── tags/route.ts                 # GET tags with AI config
 │   └── inbox-zero/
 │       ├── route.ts                  # GET dashboard data
-│       ├── triage/
-│       │   └── route.ts              # POST trigger AI triage
-│       ├── draft/
-│       │   └── route.ts              # POST generate draft reply
-│       │   └── [conversationId]/
-│       │       └── send/route.ts     # POST send draft
-│       ├── commitments/
-│       │   └── route.ts              # GET/POST commitments
-│       └── suggestions/
-│           └── route.ts              # GET tag suggestions
+│       ├── triage/route.ts           # POST trigger AI triage
+│       ├── draft/route.ts            # POST generate draft reply
+│       ├── commitments/route.ts      # GET/POST commitments
+│       └── suggestions/route.ts      # GET tag suggestions
 └── components/
+    ├── ContactsTable.tsx             # Contacts list with AI action badges
+    ├── ContactModal.tsx              # Contact details with AI Assistant tab
+    ├── ConversationsList.tsx         # Messages view conversations
+    ├── MessageThread.tsx             # Message display with media
     └── inbox-zero/
         ├── InboxZeroDashboard.tsx    # Main dashboard component
         ├── ProgressHeader.tsx        # Progress bar with counts
@@ -365,6 +380,7 @@ npx prisma studio
 
 ## Recent Improvements (Dec 2025)
 
+### Inbox Zero System
 1. **Cross-Conversation Context Resolution**: Entity resolution links contacts across conversations, automatically clearing private chats when issues are addressed in groups
 
 2. **Speed Optimizations**: Caching, parallel processing, model selection optimization (~1.5s per conversation)
@@ -376,6 +392,35 @@ npx prisma studio
 5. **Conversation State Tracking**: waiting_on_them, waiting_on_you, concluded, ongoing states
 
 6. **Topic-Based Semantic Matching**: Keywords for access, telegram, payment, meeting, fix to connect related messages across conversations
+
+### Customer Groups AI Intelligence
+7. **Full AI Intelligence Pipeline**: Action badges, urgency levels, health scores, lifecycle stages for all Customer Group conversations
+
+8. **Cross-Chat Intelligence**: Private DM context included in group chat analysis to avoid false escalations
+
+9. **Pre-Computed Intelligence**: Temporal signals, sentiment analysis, frustration detection before AI prompt
+
+10. **Smart Re-Analysis Triggers**: Auto re-analyze on new messages or notes added
+
+### Partner Intelligence System (NEW)
+11. **Partner-Specific AI**: Dedicated intelligence layer for Partner relationships with different urgency rules and actions
+
+12. **Aggressive Urgency Calibration**: Partners use context-aware urgency (critical/high/medium/low) with stricter thresholds
+
+13. **Relationship Stage Tracking**: nurturing → high_potential → active → committed → dormant
+
+14. **Partner Actions**: Reply Now, Schedule Call, Send Intro, Follow Up, Nurture, On Track
+
+15. **Inbound Lead Weighting**: Partners who reach out first get higher urgency prioritization
+
+16. **Risk Detection**: Automatic flagging of cooling relationships, competitor mentions, declined meetings
+
+### UX Improvements
+17. **Contacts as Default View**: Homepage now defaults to Contacts (CRM-first experience) instead of Messages
+
+18. **AI Action Badges**: Visual indicators on ContactsTable showing recommended actions with urgency colors
+
+19. **AI Assistant Tab**: Contact modal includes AI Assistant tab with full intelligence display
 
 ---
 
@@ -641,3 +686,151 @@ Output shows each conversation with:
 - **Per conversation**: ~8 seconds average
 - **Model**: Claude Sonnet 4 (`claude-sonnet-4-20250514`)
 - **Max tokens**: 600-700 per analysis
+
+---
+
+## Partner Intelligence System
+
+A parallel AI intelligence layer for Partner relationships. Partners are referral sources (payment processors, ISOs, industry friends, existing customers who give referrals) with different relationship dynamics than Customer Groups.
+
+### Partner vs Customer Groups
+
+| Aspect | Customer Groups | Partner |
+|--------|----------------|---------|
+| Relationship | Support/Success | Business Development |
+| Value Exchange | Paid subscription | 5% lifetime revenue share for referrals |
+| Communication Style | Problem resolution | Relationship nurturing |
+| Key Metrics | Health score, churn risk | Network value, referral potential |
+| Urgency Focus | Response time, issue resolution | Opportunity management, relationship cooling |
+
+### Partner Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    PARTNER INTELLIGENCE PIPELINE                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐    │
+│  │   GROUP     │   │   PRIVATE   │   │  INTERNAL   │   │    PRE-     │    │
+│  │   CHAT      │ + │   CHAT      │ + │   NOTES     │ + │  COMPUTED   │    │
+│  │  MESSAGES   │   │  CONTEXT    │   │             │   │   INTEL     │    │
+│  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘    │
+│         │                 │                 │                 │            │
+│         └────────────────┬┴─────────────────┴─────────────────┘            │
+│                          ▼                                                 │
+│                 ┌────────────────┐                                         │
+│                 │  CLAUDE AI     │                                         │
+│                 │  (Sonnet 4)    │                                         │
+│                 └────────┬───────┘                                         │
+│                          ▼                                                 │
+│         ┌────────────────────────────────────┐                            │
+│         │      PARTNER AI OUTPUT              │                            │
+│         │  • Action (Reply Now, Follow Up...) │                            │
+│         │  • Urgency (critical/high/med/low)  │                            │
+│         │  • Status (nurturing/active/etc.)   │                            │
+│         │  • Summary (relationship state)     │                            │
+│         │  • Next Step (specific action)      │                            │
+│         │  • Risk Level (none/low/med/high)   │                            │
+│         └────────────────────────────────────┘                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Partner Relationship Stages
+
+| Stage | Description |
+|-------|-------------|
+| **nurturing** | Building relationship, exploring fit, early conversations, just met |
+| **high_potential** | Strong network mentioned, influential position, actively engaging, INBOUND LEAD |
+| **active** | Actively referring, ongoing collaboration, frequent communication |
+| **committed** | Formal agreement signed, proven referral track record, DocuSign executed |
+| **dormant** | Was engaged, gone quiet (7+ days no response after Shalin's message) |
+
+### Partner Urgency Rules (Aggressive)
+
+| Level | Criteria |
+|-------|----------|
+| 🔴 **CRITICAL** (respond TODAY) | Partner waiting 7+ days for response, demo/call request waiting 5+ days, referral ready NOW, inbound lead waiting 3+ days |
+| 🟡 **HIGH** (24-48h) | Partner sent last message 3-7 days ago, direct question unanswered 2+ days, inbound lead waiting 1-3 days, meeting unconfirmed |
+| 🟠 **MEDIUM** (3-5 days) | Shalin sent last message 3-7 days ago, need to follow up on promised intro, short responses after detailed engagement |
+| 🟢 **LOW** (can wait 5+ days) | Active back-and-forth within 3 days, ball in partner's court, committed partners with established rhythm |
+
+### Partner Action Badges
+
+| Action | When Used | Color |
+|--------|-----------|-------|
+| **Reply Now** | Partner waiting for response, time-sensitive opportunity | Red |
+| **Schedule Call** | Complex discussion needed, relationship needs deepening | Yellow |
+| **Send Intro** | Partner ready to receive valuable connection from Shalin | Blue |
+| **Follow Up** | Check on promised referral or previous discussion | Yellow |
+| **Nurture** | Keep warm with periodic touchpoint (article, congrats) | Gray |
+| **On Track** | Active relationship, no action needed now | Green |
+
+### Partner Signals Detection
+
+```typescript
+// Positive signals (relationship progressing)
+🟢 POSITIVE:
+  - Mentioned specific referral names
+  - Asked about commission structure
+  - Made introduction
+  - Scheduled call
+  - Signed agreement
+  - Expressed enthusiasm
+
+// Warning signals (needs attention)
+🟡 WARNING:
+  - Gone quiet 5+ days
+  - Unfulfilled promise
+  - Short responses after detailed engagement
+  - Declined meeting
+
+// Risk signals (relationship at risk)
+🔴 RISK:
+  - 14+ days no response
+  - Mentioned competitors
+  - Multiple declined meetings
+```
+
+### Cross-Chat Context for Partner Groups
+
+For Partner groups, the system includes private chat context showing 1:1 discussions with group members. This helps understand the full relationship state—commitments made privately affect group dynamics.
+
+```typescript
+// Example: Partner group "Paymend Partnership"
+// System fetches private DMs between Shalin and each partner in the group
+// AI prompt includes: "CROSS-CHAT CONTEXT: Recent private discussions..."
+```
+
+### Partner-Specific Configuration
+
+Partner tag in database has custom AI settings:
+
+```typescript
+{
+  name: "Partner",
+  aiEnabled: true,
+  aiSystemPrompt: `You are Shalin's partner relationship intelligence system...`,
+  aiTeamMembers: [],
+  aiOwnerNames: ["Shalin"]
+}
+```
+
+### Smart Trigger for Partners
+
+Same as Customer Groups, Partner conversations are auto-analyzed when:
+1. **New messages arrive**: Compares `lastSyncedMessageId` vs `aiLastAnalyzedMsgId`
+2. **Notes are added**: Clears `aiLastAnalyzedMsgId` to force re-analysis
+3. **Manual trigger**: Via "Analyze" button in UI
+
+### Partner AI Output Format
+
+```json
+{
+  "status": "nurturing|high_potential|active|committed|dormant",
+  "action": "Reply Now|Schedule Call|Send Intro|Follow Up|Nurture|On Track",
+  "urgency": "critical|high|medium|low",
+  "summary": "1-2 sentences: how met, their value/network, current relationship state",
+  "nextStep": "Specific next step for Shalin - be concrete and actionable",
+  "risk": "none|low|medium|high",
+  "riskReason": "Brief evidence if risk > none"
+}
