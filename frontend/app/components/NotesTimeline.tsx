@@ -3,6 +3,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { NoteIcon, MeetingIcon, CallIcon, FileNoteIcon, PlusIcon, TrashIcon, EditIcon, DownloadIcon } from './Icons';
 
+// Global notes cache for instant loading - Lightning speed!
+// Notes persist across tab switches and panel re-renders
+const notesCache = new Map<string, {
+  notes: NoteEntry[];
+  fetchedAt: number;
+}>();
+
+// Cache validity: 5 minutes (background refresh happens anyway)
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
 export interface NoteEntry {
   id: string;
   type: 'note' | 'meeting' | 'call' | 'file';
@@ -23,6 +33,7 @@ interface NotesTimelineProps {
   onToggleExpanded?: () => void;
   onNotesCountChange?: (count: number) => void;
   fullHeight?: boolean;
+  onNotesChange?: () => void; // Callback when notes are created/updated/deleted
 }
 
 // Format relative time - Linear style
@@ -313,6 +324,22 @@ function NoteEntryItem({
   );
 }
 
+// Trigger AI re-analysis for a conversation (force=true because notes changed, not messages)
+async function triggerAIReanalysis(conversationId: string) {
+  try {
+    await fetch('/api/ai/auto-analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversationIds: [conversationId],
+        forceReanalyze: true, // Force re-analysis even if no new messages
+      }),
+    });
+  } catch (error) {
+    console.error('Failed to trigger AI re-analysis:', error);
+  }
+}
+
 // Main NotesTimeline component
 export default function NotesTimeline({
   conversationId,
@@ -320,6 +347,7 @@ export default function NotesTimeline({
   onToggleExpanded,
   onNotesCountChange,
   fullHeight = false,
+  onNotesChange,
 }: NotesTimelineProps) {
   const [notes, setNotes] = useState<NoteEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -327,15 +355,47 @@ export default function NotesTimeline({
   const [editingNote, setEditingNote] = useState<NoteEntry | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
-  // Fetch notes
-  const fetchNotes = useCallback(async () => {
+  // Instant cache load on mount - Lightning speed!
+  useEffect(() => {
     if (!conversationId) return;
-    setLoading(true);
+    const cached = notesCache.get(conversationId);
+    if (cached) {
+      setNotes(cached.notes);
+      onNotesCountChange?.(cached.notes.length);
+    }
+  }, [conversationId, onNotesCountChange]);
+
+  // Fetch notes with caching strategy: show cache instantly, refresh in background
+  const fetchNotes = useCallback(async (skipCacheCheck = false) => {
+    if (!conversationId) return;
+
+    const cached = notesCache.get(conversationId);
+    const now = Date.now();
+
+    // If we have fresh cache and not forced, skip network
+    if (!skipCacheCheck && cached && (now - cached.fetchedAt) < CACHE_TTL_MS) {
+      if (notes.length === 0) {
+        setNotes(cached.notes);
+        onNotesCountChange?.(cached.notes.length);
+      }
+      return;
+    }
+
+    // Only show loading if we have no cached data
+    if (!cached) {
+      setLoading(true);
+    }
+
     try {
       const response = await fetch(`/api/conversations/${conversationId}/notes`);
       const data = await response.json();
       if (data.success) {
         const fetchedNotes = data.data.notes || [];
+        // Update cache
+        notesCache.set(conversationId, {
+          notes: fetchedNotes,
+          fetchedAt: Date.now(),
+        });
         setNotes(fetchedNotes);
         onNotesCountChange?.(fetchedNotes.length);
       }
@@ -344,13 +404,14 @@ export default function NotesTimeline({
     } finally {
       setLoading(false);
     }
-  }, [conversationId, onNotesCountChange]);
+  }, [conversationId, onNotesCountChange, notes.length]);
 
+  // Initial fetch - background refresh
   useEffect(() => {
     fetchNotes();
-  }, [fetchNotes]);
+  }, [conversationId]); // Only re-fetch on conversationId change
 
-  // Create note
+  // Create note - optimistic UI + cache update
   const createNote = async (noteData: Partial<NoteEntry>) => {
     try {
       const response = await fetch(`/api/conversations/${conversationId}/notes`, {
@@ -360,19 +421,25 @@ export default function NotesTimeline({
       });
       const data = await response.json();
       if (data.success) {
-        setNotes(prev => {
-          const newNotes = [data.data, ...prev];
-          onNotesCountChange?.(newNotes.length);
-          return newNotes;
+        const newNotes = [data.data, ...notes];
+        setNotes(newNotes);
+        onNotesCountChange?.(newNotes.length);
+        // Update cache immediately
+        notesCache.set(conversationId, {
+          notes: newNotes,
+          fetchedAt: Date.now(),
         });
         setShowAddModal(false);
+        // Trigger AI re-analysis when notes change
+        triggerAIReanalysis(conversationId);
+        onNotesChange?.();
       }
     } catch (error) {
       console.error('Failed to create note:', error);
     }
   };
 
-  // Update note
+  // Update note - with cache update
   const updateNote = async (noteId: string, noteData: Partial<NoteEntry>) => {
     try {
       const response = await fetch(`/api/conversations/${conversationId}/notes`, {
@@ -382,15 +449,24 @@ export default function NotesTimeline({
       });
       const data = await response.json();
       if (data.success) {
-        setNotes(prev => prev.map(n => n.id === noteId ? data.data : n));
+        const newNotes = notes.map(n => n.id === noteId ? data.data : n);
+        setNotes(newNotes);
+        // Update cache immediately
+        notesCache.set(conversationId, {
+          notes: newNotes,
+          fetchedAt: Date.now(),
+        });
         setEditingNote(null);
+        // Trigger AI re-analysis when notes change
+        triggerAIReanalysis(conversationId);
+        onNotesChange?.();
       }
     } catch (error) {
       console.error('Failed to update note:', error);
     }
   };
 
-  // Delete note
+  // Delete note - with cache update
   const deleteNote = async (noteId: string) => {
     try {
       const response = await fetch(`/api/conversations/${conversationId}/notes`, {
@@ -400,12 +476,18 @@ export default function NotesTimeline({
       });
       const data = await response.json();
       if (data.success) {
-        setNotes(prev => {
-          const newNotes = prev.filter(n => n.id !== noteId);
-          onNotesCountChange?.(newNotes.length);
-          return newNotes;
+        const newNotes = notes.filter(n => n.id !== noteId);
+        setNotes(newNotes);
+        onNotesCountChange?.(newNotes.length);
+        // Update cache immediately
+        notesCache.set(conversationId, {
+          notes: newNotes,
+          fetchedAt: Date.now(),
         });
         setDeleteConfirm(null);
+        // Trigger AI re-analysis when notes change
+        triggerAIReanalysis(conversationId);
+        onNotesChange?.();
       }
     } catch (error) {
       console.error('Failed to delete note:', error);
@@ -518,8 +600,16 @@ export default function NotesTimeline({
   return (
     <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
       {/* Header - Linear style minimal */}
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggleExpanded}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggleExpanded?.();
+          }
+        }}
         style={{
           width: '100%',
           display: 'flex',
@@ -591,7 +681,7 @@ export default function NotesTimeline({
             transition: 'transform 150ms ease',
           }} />
         </div>
-      </button>
+      </div>
 
       {/* Content */}
       {isExpanded && (

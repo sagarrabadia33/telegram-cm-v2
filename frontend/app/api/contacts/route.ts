@@ -7,6 +7,7 @@ import { prisma } from '@/app/lib/prisma';
  * Returns contacts (conversations) with enriched stats for the Contacts page.
  * Supports:
  * - filtering by type: all, private (people), group, supergroup, channel
+ * - filtering by tag: tagId parameter for server-side tag filtering
  * - pagination: limit (default 50), cursor (for infinite scroll)
  * - search: server-side search on name, username, phone
  * - quickFilter: server-side smart filters (active7d, active30d, untagged, highVolume, newThisWeek, needFollowUp)
@@ -19,6 +20,8 @@ export async function GET(request: NextRequest) {
     const cursor = searchParams.get('cursor');
     const search = searchParams.get('search')?.toLowerCase().trim();
     const quickFilter = searchParams.get('quickFilter'); // Server-side quick filter
+    const tagIdsParam = searchParams.get('tagIds'); // Tag filter for Stripe-style filter bar (multi-select)
+    const tagIds = tagIdsParam ? tagIdsParam.split(',').filter(Boolean) : [];
 
     // Build type filter
     const typeWhere = typeFilter === 'all'
@@ -37,6 +40,15 @@ export async function GET(request: NextRequest) {
         { contact: { primaryPhone: { contains: search } } },
         { telegramChat: { username: { contains: search, mode: 'insensitive' as const } } },
       ],
+    } : {};
+
+    // Build tag filter for Stripe-style filter bar (multi-select with OR logic)
+    const tagWhere = tagIds.length > 0 ? {
+      tags: {
+        some: {
+          tagId: { in: tagIds },
+        },
+      },
     } : {};
 
     // Calculate date cutoffs for quick filters
@@ -95,20 +107,35 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Get total count for the type filter (for tabs - exclude search from count)
-    const totalCountPromise = prisma.conversation.count({
+    // Filter-aware base where for accurate counts (respect tag/search/quick filters)
+    const filteredBaseWhere = {
+      isSyncDisabled: false,
+      ...searchWhere,
+      ...tagWhere,
+      ...quickFilterWhere,
+    };
+
+    // UNFILTERED total count for "All" box in filter bar (should always show total contacts)
+    const unfilteredTotalPromise = prisma.conversation.count({
       where: {
         isSyncDisabled: false,
-        ...typeWhere,
+        type: { in: ['private', 'group', 'supergroup', 'channel'] },
       },
     });
 
-    // Get counts by type for tabs (without search filter)
+    // Counts reflecting current filters (except type filter) so dropdown numbers match the filtered set
+    const globalTotalPromise = prisma.conversation.count({
+      where: {
+        ...filteredBaseWhere,
+        type: { in: ['private', 'group', 'supergroup', 'channel'] },
+      },
+    });
+
     const countsPromise = Promise.all([
-      prisma.conversation.count({ where: { isSyncDisabled: false, type: { in: ['private', 'group', 'supergroup', 'channel'] } } }),
-      prisma.conversation.count({ where: { isSyncDisabled: false, type: 'private' } }),
-      prisma.conversation.count({ where: { isSyncDisabled: false, type: { in: ['group', 'supergroup'] } } }),
-      prisma.conversation.count({ where: { isSyncDisabled: false, type: 'channel' } }),
+      prisma.conversation.count({ where: { ...filteredBaseWhere, type: { in: ['private', 'group', 'supergroup', 'channel'] } } }),
+      prisma.conversation.count({ where: { ...filteredBaseWhere, type: 'private' } }),
+      prisma.conversation.count({ where: { ...filteredBaseWhere, type: { in: ['group', 'supergroup'] } } }),
+      prisma.conversation.count({ where: { ...filteredBaseWhere, type: 'channel' } }),
     ]);
 
     // DYNAMIC SMART FILTER COUNTS: Calculate quick filter counts from the TOTAL database
@@ -167,17 +194,54 @@ export async function GET(request: NextRequest) {
       `,
     ]);
 
-    // Fetch conversations with all needed data (including quickFilter)
+    // Fetch conversations with all needed data (including quickFilter and tag filter)
     const conversations = await prisma.conversation.findMany({
       where: {
         isSyncDisabled: false,
         ...typeWhere,
         ...searchWhere,
+        ...tagWhere,
         ...quickFilterWhere,
       },
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       take: limit + 1, // Fetch one extra to check if there are more
-      include: {
+      select: {
+        id: true,
+        externalChatId: true,
+        title: true,
+        type: true,
+        avatarUrl: true,
+        createdAt: true,
+        lastMessageAt: true,
+        lastSyncedAt: true,
+        metadata: true,
+        // AI Conversation Intelligence fields
+        aiStatus: true,
+        aiStatusReason: true,
+        aiStatusUpdatedAt: true,
+        aiSummary: true,
+        aiSummaryUpdatedAt: true,
+        aiChurnRisk: true,
+        aiChurnSignals: true,
+        aiSuggestedAction: true,
+        aiAction: true, // AI's raw action recommendation
+        aiAnalyzing: true,
+        aiLastAnalyzedMsgId: true,
+        lastSyncedMessageId: true,
+        // Manual status override and AI recommendation
+        manualStatus: true,
+        manualStatusSetAt: true,
+        aiStatusRecommendation: true,
+        aiStatusRecommendationReason: true,
+        // World-class intelligence fields
+        aiHealthScore: true,
+        aiHealthFactors: true,
+        aiLifecycleStage: true,
+        aiUrgencyLevel: true,
+        aiSentiment: true,
+        aiSentimentTrajectory: true,
+        aiFrustrationSignals: true,
+        aiCriticalInsights: true,
         contact: {
           select: {
             id: true,
@@ -205,6 +269,7 @@ export async function GET(request: NextRequest) {
                 id: true,
                 name: true,
                 color: true,
+                aiEnabled: true, // Include AI enabled status for tag
               },
             },
           },
@@ -249,8 +314,9 @@ export async function GET(request: NextRequest) {
     });
 
     // Wait for counts (run in parallel with conversation fetch)
-    const [total, countResults, quickFilterResults] = await Promise.all([
-      totalCountPromise,
+    const [unfilteredTotal, globalTotal, countResults, quickFilterResults] = await Promise.all([
+      unfilteredTotalPromise,
+      globalTotalPromise,
       countsPromise,
       quickFilterCountsPromise,
     ]);
@@ -337,6 +403,38 @@ export async function GET(request: NextRequest) {
 
         // For groups: whether we have member data
         hasMemberData: isGroup ? conv._count.members > 0 : false,
+
+        // AI Conversation Intelligence
+        aiStatus: conv.aiStatus || null,
+        aiStatusReason: conv.aiStatusReason || null,
+        aiStatusUpdatedAt: conv.aiStatusUpdatedAt?.toISOString() || null,
+        aiSummary: conv.aiSummary || null,
+        aiSummaryUpdatedAt: conv.aiSummaryUpdatedAt?.toISOString() || null,
+        aiChurnRisk: conv.aiChurnRisk || null,
+        aiChurnSignals: conv.aiChurnSignals || null,
+        aiSuggestedAction: conv.aiSuggestedAction || null,
+        aiAction: conv.aiAction || null, // AI's raw action recommendation
+        // Check if any tag has AI enabled
+        hasAiEnabled: conv.tags.some(ct => ct.tag.aiEnabled === true),
+        // Analyzing state - true when AI is currently processing
+        aiAnalyzing: conv.aiAnalyzing || false,
+        // Has new messages that haven't been analyzed yet
+        aiNeedsUpdate: conv.lastSyncedMessageId !== conv.aiLastAnalyzedMsgId,
+        // Manual status override and AI recommendation
+        manualStatus: conv.manualStatus || null,
+        manualStatusSetAt: conv.manualStatusSetAt?.toISOString() || null,
+        aiStatusRecommendation: conv.aiStatusRecommendation || null,
+        aiStatusRecommendationReason: conv.aiStatusRecommendationReason || null,
+
+        // WORLD-CLASS INTELLIGENCE FIELDS (pre-computed, 100% reliable)
+        aiHealthScore: conv.aiHealthScore || null,
+        aiHealthFactors: conv.aiHealthFactors as { responsiveness: number; sentiment: number; engagement: number; resolution: number } | null,
+        aiLifecycleStage: conv.aiLifecycleStage || null,
+        aiUrgencyLevel: conv.aiUrgencyLevel || null,
+        aiSentiment: conv.aiSentiment || null,
+        aiSentimentTrajectory: conv.aiSentimentTrajectory || null,
+        aiFrustrationSignals: conv.aiFrustrationSignals as string[] | null,
+        aiCriticalInsights: conv.aiCriticalInsights as string[] | null,
       };
     });
 
@@ -358,12 +456,19 @@ export async function GET(request: NextRequest) {
       finalTransformed = transformed.filter(c => c.messagesReceived > c.messagesSent);
     }
 
-    // Use pre-calculated counts for the filter tabs (from total DB, not just current page)
+    // Use pre-calculated counts for the filter tabs
+    // All counts respect current filters (tag, search, quick filter) for accurate Type dropdown numbers
+    // countResults[0] = filtered "all types", countResults[1-3] = filtered by type
     const counts = {
-      all: countResults[0],
+      all: countResults[0], // Filtered count - reflects tag/search/quick filter selection
       people: countResults[1],
       groups: countResults[2],
       channels: countResults[3],
+    };
+
+    // Unfiltered total for the main "All" box in the primary filter bar (always shows total contacts)
+    const unfilteredCounts = {
+      all: unfilteredTotal,
     };
 
     // DYNAMIC QUICK FILTER COUNTS - accurate totals from database
@@ -378,13 +483,15 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       contacts: finalTransformed,
-      counts,
+      counts, // Filtered counts for Type dropdown
+      unfilteredCounts, // Unfiltered total for main "All" box
       activeQuickFilter: quickFilter || null,
+      activeTagIds: tagIds, // Current tag filter for Stripe-style bar (multi-select)
       quickFilterCounts, // New: accurate counts for smart filters
       pagination: {
         hasMore,
         nextCursor,
-        total,
+        total: globalTotal,
         returned: transformed.length,
       },
     });

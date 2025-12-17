@@ -3,16 +3,20 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ConversationsList from './components/ConversationsList';
 import ContactsTable, { Contact } from './components/ContactsTable';
-import type { QuickFilterType } from './components/SmartFilterSection';
 import ContactSlidePanel from './components/ContactSlidePanel';
+import ContactModal from './components/ContactModal';
 import MessageView from './components/MessageView';
 import AIAssistant from './components/AIAssistant';
 import SearchModal from './components/SearchModal';
+import AISettingsModal from './components/AISettingsModal';
 import { PageSkeleton, MessagesListSkeleton } from './components/Skeleton';
 import { Conversation, Message, MessagesResponse } from './types';
 import { useSync, ConversationSyncResult, GlobalSyncResult } from './contexts/SyncContext';
 import { useRealtimeUpdates } from './hooks/useRealtimeUpdates';
 import { track, setViewMode as setAnalyticsViewMode } from './lib/analytics/client';
+
+// QuickFilterType - used for server-side filtering in contacts view
+type QuickFilterType = 'active7d' | 'active30d' | 'untagged' | 'highVolume' | 'newThisWeek' | 'needFollowUp' | 'noReply';
 
 // ============================================
 // Performance: Message Cache for instant switching
@@ -96,6 +100,7 @@ export default function Home() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [contactTypeFilter, setContactTypeFilter] = useState<'all' | 'people' | 'groups' | 'channels'>('all');
   const [contactCounts, setContactCounts] = useState({ all: 0, people: 0, groups: 0, channels: 0 });
+  const [unfilteredContactCount, setUnfilteredContactCount] = useState<number | null>(null); // Total contacts for "All" box
   const [contactsLoading, setContactsLoading] = useState(false);
   const [contactsLoadingMore, setContactsLoadingMore] = useState(false);
   const [contactsHasMore, setContactsHasMore] = useState(false);
@@ -103,6 +108,11 @@ export default function Home() {
   const [contactsSearch, setContactsSearch] = useState('');
   const [contactsSearching, setContactsSearching] = useState(false); // Subtle search indicator
   const [isContactPanelOpen, setIsContactPanelOpen] = useState(false);
+  const [isContactModalOpen, setIsContactModalOpen] = useState(false); // New resizable modal for filtered contacts
+  // Tag filtering for contacts (Stripe-style filter bar)
+  const [contactTagFilters, setContactTagFilters] = useState<string[]>([]);
+  // Last active filtering for contacts
+  const [contactLastActiveFilters, setContactLastActiveFilters] = useState<('all' | 'today' | 'week' | 'month' | '3months' | 'older')[]>(['all']);
   // Server-side quick filter (active7d, active30d, untagged, etc.)
   const [activeQuickFilter, setActiveQuickFilter] = useState<QuickFilterType | null>(null);
   // DYNAMIC QUICK FILTER COUNTS - from server, always accurate
@@ -124,6 +134,10 @@ export default function Home() {
 
   // Search modal state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // AI Settings modal state
+  const [isAISettingsOpen, setIsAISettingsOpen] = useState(false);
+  const [aiSettingsTagId, setAiSettingsTagId] = useState<string | null>(null);
 
   // Message to highlight/scroll to from search
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
@@ -245,10 +259,12 @@ export default function Home() {
     append?: boolean;
     type?: string;
     quickFilter?: string | null; // Server-side quick filter
+    tagIds?: string[]; // Server-side tag filter (Stripe-style)
     isInitialLoad?: boolean; // Only show skeleton on true initial load (no data yet)
     isSearch?: boolean; // Use subtle searching indicator instead of skeleton
+    isFiltering?: boolean; // Show subtle filtering indicator
   }) => {
-    const { cursor, search, append = false, type, quickFilter, isInitialLoad = false, isSearch = false } = options || {};
+    const { cursor, search, append = false, type, quickFilter, tagIds, isInitialLoad = false, isSearch = false, isFiltering = false } = options || {};
 
     // SMOOTH UX: Only show loading skeleton on true initial load (when no contacts displayed)
     // For search/filter changes, keep showing existing data until new data arrives
@@ -257,8 +273,8 @@ export default function Home() {
     } else if (isInitialLoad) {
       // Only show full loading state when there's truly no data to display
       setContactsLoading(true);
-    } else if (isSearch) {
-      // Subtle search indicator - just spinner in search box, no skeleton flash
+    } else if (isSearch || isFiltering) {
+      // Subtle search/filter indicator - just spinner, no skeleton flash
       setContactsSearching(true);
     }
     // For filter changes without search: no loading state at all
@@ -280,6 +296,10 @@ export default function Home() {
       // Server-side quick filter (100x more accurate than client-side!)
       if (quickFilter) {
         params.set('quickFilter', quickFilter);
+      }
+      // Server-side tag filter (Stripe-style filter bar)
+      if (tagIds && tagIds.length > 0) {
+        params.set('tagIds', tagIds.join(','));
       }
 
       const response = await fetch(`/api/contacts?${params.toString()}`);
@@ -305,6 +325,10 @@ export default function Home() {
         setContactCounts(data.counts);
         setContactsHasMore(data.pagination?.hasMore || false);
         setContactsNextCursor(data.pagination?.nextCursor || null);
+        // Set unfiltered count for "All" box (only on first load, don't overwrite)
+        if (data.unfilteredCounts?.all !== undefined) {
+          setUnfilteredContactCount(data.unfilteredCounts.all);
+        }
         // DYNAMIC: Update quick filter counts from server (always accurate)
         if (data.quickFilterCounts) {
           setQuickFilterCounts(data.quickFilterCounts);
@@ -328,8 +352,9 @@ export default function Home() {
       append: true,
       type: contactTypeFilter,
       quickFilter: activeQuickFilter,
+      tagIds: contactTagFilters,
     });
-  }, [contactsLoadingMore, contactsHasMore, contactsNextCursor, contactsSearch, contactTypeFilter, activeQuickFilter, fetchContacts]);
+  }, [contactsLoadingMore, contactsHasMore, contactsNextCursor, contactsSearch, contactTypeFilter, activeQuickFilter, contactTagFilters, fetchContacts]);
 
   // Handle contacts search (with debounce via effect)
   // SMOOTH UX: Don't clear contacts - just fetch and swap seamlessly
@@ -338,8 +363,8 @@ export default function Home() {
     // Reset cursor for new search, but DON'T clear contacts (avoid skeleton flash)
     setContactsNextCursor(null);
     // Fetch with isSearch flag - shows subtle spinner in search box
-    fetchContacts({ search, type: contactTypeFilter, quickFilter: activeQuickFilter, isSearch: true });
-  }, [contactTypeFilter, activeQuickFilter, fetchContacts]);
+    fetchContacts({ search, type: contactTypeFilter, quickFilter: activeQuickFilter, tagIds: contactTagFilters, isSearch: true });
+  }, [contactTypeFilter, activeQuickFilter, contactTagFilters, fetchContacts]);
 
   // Handle quick filter changes (server-side filtering - 100x more accurate!)
   const handleQuickFilterChange = useCallback((filterType: QuickFilterType | null) => {
@@ -352,8 +377,8 @@ export default function Home() {
       track('quick_filter_cleared', {});
     }
     // Fetch filtered contacts from server - shows accurate results!
-    fetchContacts({ type: contactTypeFilter, quickFilter: filterType, search: contactsSearch });
-  }, [contactTypeFilter, contactsSearch, fetchContacts]);
+    fetchContacts({ type: contactTypeFilter, quickFilter: filterType, search: contactsSearch, tagIds: contactTagFilters, isFiltering: true });
+  }, [contactTypeFilter, contactsSearch, contactTagFilters, fetchContacts]);
 
   // Filter contacts by type
   const filteredContacts = useMemo(() => {
@@ -423,6 +448,32 @@ export default function Home() {
       track('tags_filtered', { tagCount: tagIds.length });
     }
   };
+
+  // Handle contact tag filter changes (Stripe-style filter bar)
+  const handleContactTagFilterChange = useCallback((tagIds: string[]) => {
+    setContactTagFilters(tagIds);
+    setContactsNextCursor(null);
+    // Track tag filter change
+    if (tagIds.length > 0) {
+      track('contact_tags_filtered', { tagCount: tagIds.length });
+    }
+    // Fetch with server-side tag filter
+    fetchContacts({
+      type: contactTypeFilter,
+      quickFilter: activeQuickFilter,
+      search: contactsSearch,
+      tagIds,
+      isFiltering: true
+    });
+  }, [contactTypeFilter, activeQuickFilter, contactsSearch, fetchContacts]);
+
+  // Handle last active filter changes
+  const handleLastActiveFiltersChange = useCallback((filters: ('all' | 'today' | 'week' | 'month' | '3months' | 'older')[]) => {
+    setContactLastActiveFilters(filters);
+    // Last active filtering is done client-side in ContactsTable, no need to refetch
+    // Just track the change
+    track('contact_last_active_filtered', { filters });
+  }, []);
 
   // Handle view mode switch with analytics tracking
   const handleViewModeSwitch = useCallback((newMode: ViewMode) => {
@@ -608,12 +659,36 @@ export default function Home() {
   }, [selectedConversation, messagesLoadingMore, messagesHasMore, messagesNextCursor, messages]);
 
   // Real-time listener updates - auto-refresh when new messages arrive
+  // Also triggers smart AI re-analysis for conversations with new messages
   const handleNewMessages = useCallback(() => {
     console.log('[Home] Real-time: New messages detected, refreshing data');
     fetchConversations(false);
     if (selectedConversation) {
       fetchMessages(selectedConversation.id, false);
     }
+
+    // SMART TRIGGER: Check for AI re-analysis after new messages arrive
+    // Use a small delay to let the DB updates settle, then check for stale analysis
+    setTimeout(() => {
+      // Fire and forget - don't block UI
+      fetch('/api/ai/auto-analyze')
+        .then(res => res.json())
+        .then(staleness => {
+          const urgentIds = staleness.staleness?.urgentIds || [];
+          if (urgentIds.length > 0) {
+            console.log(`[AI] New messages detected - ${urgentIds.length} conversations need re-analysis`);
+            fetch('/api/ai/auto-analyze', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                conversationIds: urgentIds.slice(0, 5),
+                forceReanalyze: true,
+              }),
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 3000); // 3 second delay to let messages sync
   }, [fetchConversations, fetchMessages, selectedConversation]);
 
   // Monitor real-time listener for new messages (polls every 5 seconds)
@@ -622,6 +697,57 @@ export default function Home() {
     pollingInterval: 5000,
     onNewMessages: handleNewMessages,
   });
+
+  // SMART AI RE-ANALYSIS: Background staleness check and auto-refresh
+  // Runs every 2 minutes to detect and re-analyze stale conversations
+  // Also triggered immediately when new messages arrive
+  const triggerSmartReanalysis = useCallback(async (immediate = false) => {
+    try {
+      // Check for stale conversations
+      const stalenessResponse = await fetch('/api/ai/auto-analyze');
+      if (!stalenessResponse.ok) return;
+
+      const staleness = await stalenessResponse.json();
+
+      // If there are stale or urgent conversations, trigger re-analysis
+      const allIds = [
+        ...(staleness.staleness?.urgentIds || []),
+        ...(staleness.staleness?.conversationIds || []).slice(0, 5), // Limit to 5 stale
+      ];
+
+      if (allIds.length > 0) {
+        console.log(`[AI] ${immediate ? 'Immediate' : 'Scheduled'} re-analysis for ${allIds.length} conversations`);
+
+        // Trigger re-analysis (fire and forget - don't block UI)
+        fetch('/api/ai/auto-analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationIds: allIds.slice(0, 10), // Limit batch size
+            forceReanalyze: true,
+          }),
+        }).catch(() => {
+          // Silent - don't disrupt UI
+        });
+      }
+    } catch (err) {
+      // Silent failure - staleness check is best-effort
+      console.debug('[AI] Staleness check failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Run initial check after 30 seconds (let app load first)
+    const initialTimeout = setTimeout(() => triggerSmartReanalysis(false), 30000);
+
+    // Then run every 2 minutes (reduced from 5 for faster updates)
+    const interval = setInterval(() => triggerSmartReanalysis(false), 2 * 60 * 1000);
+
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(interval);
+    };
+  }, [triggerSmartReanalysis]);
 
   // Listen for sync completion to refresh data in real-time
   useEffect(() => {
@@ -736,13 +862,23 @@ export default function Home() {
 
   const handleSelectContact = (contact: Contact) => {
     setSelectedContact(contact);
-    setIsContactPanelOpen(true);
+    // Use new ContactModal when tag filters are active (e.g., Customer Groups)
+    // This provides the full conversation view with embedded messaging
+    if (contactTagFilters.length > 0) {
+      setIsContactModalOpen(true);
+    } else {
+      setIsContactPanelOpen(true);
+    }
     // Track contact selected
     track('contact_selected', { contactId: contact.id, type: contact.type }, { contactId: contact.id });
   };
 
   const handleCloseContactPanel = () => {
     setIsContactPanelOpen(false);
+  };
+
+  const handleCloseContactModal = () => {
+    setIsContactModalOpen(false);
   };
 
   // Handle "Open Chat" from contact detail - switch to messages view
@@ -821,6 +957,30 @@ export default function Home() {
       handleContactTagsChange(contactId, tags);
     });
   }, [handleContactTagsChange]);
+
+  // Handle opening AI Settings modal
+  const handleOpenAISettings = useCallback(() => {
+    // When opening AI settings, pre-select the first AI-enabled tag filter if any
+    const firstAiTag = contactTagFilters.length > 0 ? contactTagFilters[0] : null;
+    setAiSettingsTagId(firstAiTag);
+    setIsAISettingsOpen(true);
+  }, [contactTagFilters]);
+
+  // Handle AI analysis from settings modal
+  const handleAnalyzeConversations = useCallback(async (tagId: string) => {
+    try {
+      const response = await fetch('/api/ai/analyze-conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagId, forceRefresh: true }),
+      });
+      if (!response.ok) throw new Error('Analysis failed');
+      // Refresh contacts to show updated AI data
+      fetchContacts();
+    } catch (error) {
+      console.error('Failed to analyze conversations:', error);
+    }
+  }, [fetchContacts]);
 
   // Handle export contacts to CSV
   const handleExportContactsCsv = useCallback(() => {
@@ -1206,12 +1366,14 @@ export default function Home() {
             typeFilter={contactTypeFilter}
             onTypeFilterChange={setContactTypeFilter}
             counts={contactCounts}
+            unfilteredTotalCount={unfilteredContactCount}
             quickFilterCounts={quickFilterCounts}
             onExportCsv={handleExportContactsCsv}
             allTags={allTags}
             onTagsChange={handleContactTagsChange}
             onBulkTagsChange={handleBulkContactTagsChange}
             isLoading={contactsLoading}
+            isFiltering={contactsSearching} // Show subtle filtering indicator
             hasMore={contactsHasMore}
             isLoadingMore={contactsLoadingMore}
             onLoadMore={loadMoreContacts}
@@ -1219,15 +1381,43 @@ export default function Home() {
             isSearching={contactsSearching}
             onQuickFilterChange={handleQuickFilterChange}
             activeQuickFilter={activeQuickFilter}
+            // Stripe-style tag filtering (server-side)
+            activeTagFilters={contactTagFilters}
+            onTagFilterChange={handleContactTagFilterChange}
+            // Last active filtering (client-side)
+            lastActiveFilters={contactLastActiveFilters}
+            onLastActiveFiltersChange={handleLastActiveFiltersChange}
+            // AI Settings
+            onAISettings={handleOpenAISettings}
+            hasAiEnabledTag={allTags.some(t => contactTagFilters.includes(t.id))}
           />
         </div>
 
-        {/* Slide-out Contact Panel */}
+        {/* AI Settings Modal */}
+        <AISettingsModal
+          isOpen={isAISettingsOpen}
+          onClose={() => setIsAISettingsOpen(false)}
+          selectedTagId={aiSettingsTagId}
+          allTags={allTags}
+          onTagSelect={setAiSettingsTagId}
+          onAnalyze={handleAnalyzeConversations}
+        />
+
+        {/* Slide-out Contact Panel - used when no tag filters active */}
         <ContactSlidePanel
           contact={selectedContact}
           isOpen={isContactPanelOpen}
           onClose={handleCloseContactPanel}
           onOpenChat={handleOpenChat}
+          onTagsChange={handleContactTagsChange}
+          allTags={allTags}
+        />
+
+        {/* Full Contact Modal - used when tag filters are active (e.g., Customer Groups) */}
+        <ContactModal
+          contact={selectedContact}
+          isOpen={isContactModalOpen}
+          onClose={handleCloseContactModal}
           onTagsChange={handleContactTagsChange}
           allTags={allTags}
         />

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Contact } from './ContactsTable';
 import Tooltip from './Tooltip';
+import NotesTimeline from './NotesTimeline';
 
 // Custom hook for responsive breakpoints
 function useIsMobile(): boolean {
@@ -93,9 +94,12 @@ export default function ContactSlidePanel({
   allTags: propAllTags,
 }: ContactSlidePanelProps) {
   const isMobile = useIsMobile();
-  const [notes, setNotes] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
   const [imageError, setImageError] = useState(false);
+  // Draft reply state
+  const [draftReply, setDraftReply] = useState('');
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
+  const [selectedTone, setSelectedTone] = useState<'professional' | 'friendly' | 'casual'>('professional');
+  const [showToneDropdown, setShowToneDropdown] = useState(false);
   const [localAllTags, setLocalAllTags] = useState<Tag[]>([]);
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false);
   const [newTagName, setNewTagName] = useState('');
@@ -105,10 +109,10 @@ export default function ContactSlidePanel({
   const [tagSearchQuery, setTagSearchQuery] = useState('');
   // Initialize with default position - will be updated on open
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const tagDropdownRef = useRef<HTMLDivElement>(null);
   const tagButtonRef = useRef<HTMLButtonElement>(null);
   const tagSearchInputRef = useRef<HTMLInputElement>(null);
+  const toneDropdownRef = useRef<HTMLDivElement>(null);
 
   // Use prop tags if available, otherwise use locally fetched tags
   const allTags = propAllTags || localAllTags;
@@ -120,12 +124,13 @@ export default function ContactSlidePanel({
   // Reset UI state when contact changes
   useEffect(() => {
     if (contact) {
-      setNotes(contact.notes || '');
       setImageError(false);
       setIsTagDropdownOpen(false);
       setNewTagName('');
       setIsCreatingTag(false);
       setTagSearchQuery('');
+      setDraftReply('');
+      setShowToneDropdown(false);
     }
   }, [contact?.id]);
 
@@ -198,35 +203,50 @@ export default function ContactSlidePanel({
     return tag.name.toLowerCase().includes(tagSearchQuery.toLowerCase());
   });
 
-  // Auto-save notes with debounce
-  const saveNotes = useCallback(async (newNotes: string) => {
-    if (!contact) return;
-    setIsSaving(true);
+  // Close tone dropdown when clicking outside
+  useEffect(() => {
+    if (!showToneDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (toneDropdownRef.current && !toneDropdownRef.current.contains(e.target as Node)) {
+        setShowToneDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showToneDropdown]);
+
+  // Generate draft reply
+  const generateDraftReply = useCallback(async () => {
+    if (!contact || isGeneratingDraft) return;
+    setIsGeneratingDraft(true);
+    setDraftReply('');
+
     try {
-      await fetch(`/api/conversations/${contact.id}/notes`, {
-        method: 'PUT',
+      const response = await fetch(`/api/inbox-zero/draft/${contact.id}`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notes: newNotes }),
+        body: JSON.stringify({ tone: selectedTone }),
       });
+      const data = await response.json();
+      if (data.success && data.draft) {
+        setDraftReply(data.draft);
+      }
     } catch (error) {
-      console.error('Failed to save notes:', error);
+      console.error('Failed to generate draft:', error);
     } finally {
-      setIsSaving(false);
+      setIsGeneratingDraft(false);
     }
-  }, [contact]);
+  }, [contact, selectedTone, isGeneratingDraft]);
 
-  const handleNotesChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newNotes = e.target.value;
-    setNotes(newNotes);
-
-    // Debounce save
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
+  // Copy draft to clipboard
+  const copyDraftToClipboard = useCallback(async () => {
+    if (!draftReply) return;
+    try {
+      await navigator.clipboard.writeText(draftReply);
+    } catch (error) {
+      console.error('Failed to copy:', error);
     }
-    saveTimeoutRef.current = setTimeout(() => {
-      saveNotes(newNotes);
-    }, 1000);
-  };
+  }, [draftReply]);
 
   // Add tag to contact - delegates to parent callback which handles API and state
   const addTagToContact = (tag: Tag) => {
@@ -298,15 +318,6 @@ export default function ContactSlidePanel({
       setIsExporting(false);
     }
   };
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-    };
-  }, []);
 
   // Handle escape key
   useEffect(() => {
@@ -511,11 +522,20 @@ export default function ContactSlidePanel({
                 <p style={{
                   fontSize: '12px',
                   color: 'var(--text-tertiary)',
-                  margin: '0 0 8px 0',
+                  margin: '0 0 4px 0',
                 }}>
                   {contact.username ? `@${contact.username}` : (
                     isChannel ? 'Channel' : isGroup ? 'Group' : 'Private Chat'
                   )}
+                </p>
+
+                {/* Last message time */}
+                <p style={{
+                  fontSize: '11px',
+                  color: 'var(--text-quaternary)',
+                  margin: '0 0 8px 0',
+                }}>
+                  Last message {formatRelativeTime(contact.lastInteraction)}
                 </p>
 
                 {/* Online status - only for people, fixed consistency */}
@@ -1036,8 +1056,8 @@ export default function ContactSlidePanel({
             </div>
           )}
 
-          {/* Notes */}
-          <div style={{ padding: '16px' }}>
+          {/* Draft Reply Section */}
+          <div style={{ padding: '16px', borderBottom: '1px solid var(--border-subtle)' }}>
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -1051,33 +1071,189 @@ export default function ContactSlidePanel({
                 textTransform: 'uppercase',
                 letterSpacing: '0.5px',
               }}>
-                Notes
+                Draft Reply
               </span>
-              {isSaving && (
-                <span style={{ fontSize: '10px', color: 'var(--text-quaternary)' }}>Saving...</span>
-              )}
+              {/* Tone selector */}
+              <div style={{ position: 'relative' }} ref={toneDropdownRef}>
+                <button
+                  onClick={() => setShowToneDropdown(!showToneDropdown)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 8px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    color: 'var(--text-secondary)',
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {selectedTone.charAt(0).toUpperCase() + selectedTone.slice(1)}
+                  <ChevronDownIcon size={10} />
+                </button>
+                {showToneDropdown && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: 0,
+                    marginTop: '4px',
+                    background: 'var(--bg-primary)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: '6px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                    zIndex: 100,
+                    minWidth: '120px',
+                  }}>
+                    {(['professional', 'friendly', 'casual'] as const).map(tone => (
+                      <button
+                        key={tone}
+                        onClick={() => {
+                          setSelectedTone(tone);
+                          setShowToneDropdown(false);
+                        }}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          padding: '8px 12px',
+                          fontSize: '12px',
+                          color: selectedTone === tone ? 'var(--accent-primary)' : 'var(--text-primary)',
+                          background: 'transparent',
+                          border: 'none',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                      >
+                        {tone.charAt(0).toUpperCase() + tone.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <textarea
-              value={notes}
-              onChange={handleNotesChange}
-              placeholder="Add notes about this contact..."
-              style={{
-                width: '100%',
-                minHeight: '100px',
-                padding: '10px 12px',
+
+            {/* Generate button or draft content */}
+            {!draftReply && !isGeneratingDraft ? (
+              <button
+                onClick={generateDraftReply}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  padding: '12px',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  color: 'var(--accent-primary)',
+                  background: 'var(--accent-subtle)',
+                  border: '1px solid var(--accent-primary)',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  transition: 'all 150ms ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--accent-primary)';
+                  e.currentTarget.style.color = 'white';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'var(--accent-subtle)';
+                  e.currentTarget.style.color = 'var(--accent-primary)';
+                }}
+              >
+                <SparkleIcon size={14} />
+                Generate Draft in Shalin's Tone
+              </button>
+            ) : isGeneratingDraft ? (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                padding: '20px',
+                color: 'var(--text-tertiary)',
                 fontSize: '13px',
-                lineHeight: 1.5,
-                color: 'var(--text-primary)',
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border-default)',
-                borderRadius: '8px',
-                resize: 'vertical',
-                outline: 'none',
-                fontFamily: 'inherit',
-              }}
-              className="focus:border-[var(--accent-primary)] placeholder:text-[var(--text-quaternary)]"
-            />
+              }}>
+                <LoadingSpinner size={14} />
+                Generating draft...
+              </div>
+            ) : (
+              <div>
+                <div style={{
+                  padding: '12px',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-default)',
+                  marginBottom: '8px',
+                }}>
+                  <p style={{
+                    margin: 0,
+                    fontSize: '13px',
+                    lineHeight: 1.5,
+                    color: 'var(--text-primary)',
+                    whiteSpace: 'pre-wrap',
+                  }}>
+                    {draftReply}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={copyDraftToClipboard}
+                    style={{
+                      flex: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      padding: '8px',
+                      fontSize: '12px',
+                      fontWeight: 500,
+                      color: 'var(--text-secondary)',
+                      background: 'var(--bg-tertiary)',
+                      border: '1px solid var(--border-default)',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <CopyIcon size={12} />
+                    Copy
+                  </button>
+                  <button
+                    onClick={generateDraftReply}
+                    style={{
+                      flex: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      padding: '8px',
+                      fontSize: '12px',
+                      fontWeight: 500,
+                      color: 'var(--accent-primary)',
+                      background: 'transparent',
+                      border: '1px solid var(--accent-primary)',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <RefreshIcon size={12} />
+                    Regenerate
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
+
+          {/* Notes Timeline */}
+          <NotesTimeline
+            conversationId={contact.id}
+            isExpanded={true}
+            fullHeight={false}
+          />
         </div>
       </div>
     </>
@@ -1221,6 +1397,52 @@ function BackIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M10 12L6 8l4-4" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.5 5.25L7 8.75L10.5 5.25" />
+    </svg>
+  );
+}
+
+function SparkleIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 0L9.5 5.5L15 7L9.5 8.5L8 14L6.5 8.5L1 7L6.5 5.5L8 0Z" />
+    </svg>
+  );
+}
+
+function CopyIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="5" width="9" height="9" rx="1" />
+      <path d="M2 11V3a1 1 0 011-1h8" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2v4h-4" />
+      <path d="M2 14v-4h4" />
+      <path d="M13.5 6A6 6 0 003 4.5L2 6" />
+      <path d="M2.5 10A6 6 0 0013 11.5l1-1.5" />
+    </svg>
+  );
+}
+
+function LoadingSpinner({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ animation: 'spin 1s linear infinite' }}>
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      <circle cx="8" cy="8" r="6" stroke="var(--border-default)" strokeWidth="2" />
+      <path d="M14 8a6 6 0 00-6-6" stroke="var(--accent-primary)" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }

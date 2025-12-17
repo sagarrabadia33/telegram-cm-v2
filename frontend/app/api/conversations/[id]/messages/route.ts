@@ -79,6 +79,8 @@ export async function GET(
       let media: {
         type: string;
         url: string;
+        downloadUrl?: string;
+        fallbackUrl?: string;
         name?: string;
         mimeType?: string;
         size?: number;
@@ -104,23 +106,42 @@ export async function GET(
             // ALWAYS use on-demand download if we have telegram IDs (historical + new messages)
             // Priority: 1. On-demand from Telegram API, 2. base64 data URL, 3. Local path (fallback)
             let url: string;
+            let downloadUrl: string | undefined;
+            let fallbackUrl: string | undefined;
+            const localPath = file.path
+              ? (file.path.startsWith('/media/')
+                ? `/api${file.path}`
+                : `/api/media${file.path}`)
+              : undefined;
 
             if (msgTelegramId && telegramChatId) {
               // ON-DEMAND: Use download proxy endpoint - works for ALL messages
-              url = `/api/media/download?telegram_message_id=${msgTelegramId}&telegram_chat_id=${telegramChatId}`;
+              downloadUrl = `/api/media/download?telegram_message_id=${msgTelegramId}&telegram_chat_id=${telegramChatId}`;
+              url = downloadUrl;
+              // LOCAL RELIABILITY: also expose local file path as fallback when present
+              if (localPath) {
+                fallbackUrl = localPath;
+              }
             } else if (file.base64) {
               // LEGACY: Direct base64 data URL
               url = file.base64;
+              fallbackUrl = file.base64;
             } else {
               // FALLBACK: Local file path (won't work in production Railway)
-              url = file.path.startsWith('/media/')
-                ? `/api${file.path}`
-                : `/api/media${file.path}`;
+              if (localPath) {
+                url = localPath;
+                fallbackUrl = file.base64 || localPath;
+              } else {
+                url = file.base64 || '';
+                fallbackUrl = file.base64 || '';
+              }
             }
 
             return {
               type: file.type || 'unknown',
               url,
+              downloadUrl,
+              fallbackUrl,
               name: file.name,
               mimeType: file.mimeType,
               size: file.size,

@@ -3,7 +3,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { SearchIcon } from './Icons';
 import Tooltip from './Tooltip';
-import SmartFilterSection from './SmartFilterSection';
+import ContactFilterBar, { LastActiveFilter, TypeFilter } from './ContactFilterBar';
 
 // Custom hook for responsive breakpoints
 function useIsMobile(): boolean {
@@ -42,13 +42,42 @@ export interface Contact {
   tags: { id: string; name: string; color: string | null }[];
   notes: string | null;
   hasMemberData: boolean;
+  // AI Conversation Intelligence fields
+  aiStatus: string | null; // Now supports any tag-specific status
+  aiStatusReason: string | null;
+  aiStatusUpdatedAt: string | null;
+  aiSummary: string | null;
+  aiSummaryUpdatedAt: string | null;
+  aiChurnRisk: 'high' | 'medium' | 'low' | null;
+  aiChurnSignals: string[] | null;
+  aiSuggestedAction: string | null;
+  aiAction: 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | 'Send Intro' | 'Follow Up' | 'Nurture' | null; // AI's action recommendation
+  hasAiEnabled: boolean;
+  // Real-time analysis state
+  aiAnalyzing: boolean;
+  aiNeedsUpdate: boolean;
+  // Manual status override and AI recommendation
+  manualStatus: string | null;
+  manualStatusSetAt: string | null;
+  aiStatusRecommendation: string | null;
+  aiStatusRecommendationReason: string | null;
+  // WORLD-CLASS INTELLIGENCE FIELDS
+  aiHealthScore: number | null;
+  aiHealthFactors: { responsiveness: number; sentiment: number; engagement: number; resolution: number } | null;
+  aiLifecycleStage: 'onboarding' | 'active' | 'at_risk' | 'dormant' | 'churning' | null;
+  aiUrgencyLevel: 'critical' | 'high' | 'medium' | 'low' | null;
+  aiSentiment: 'positive' | 'negative' | 'neutral' | 'mixed' | null;
+  aiSentimentTrajectory: 'improving' | 'stable' | 'deteriorating' | 'unknown' | null;
+  aiFrustrationSignals: string[] | null;
+  aiCriticalInsights: string[] | null;
 }
 
-// All available tags for filtering
+// All available tags for filtering (includes counts from API)
 export interface Tag {
   id: string;
   name: string;
   color: string | null;
+  conversationCount?: number; // Total count from database
 }
 
 // Telegram-style avatar colors
@@ -98,9 +127,317 @@ const LAST_ACTIVE_FILTERS = [
   { key: 'older', label: 'Older than 3 months' },
 ] as const;
 
-type LastActiveFilter = typeof LAST_ACTIVE_FILTERS[number]['key'];
+// AI Status styling and helpers - Linear design system
+// Status should be ACTION-ORIENTED: Tell user what to do, not just state
+// Now supports any string status (modular for different tag types: Customer, Partner, etc.)
+type AiStatus = string;
 
-type SortKey = 'name' | 'type' | 'totalMessages' | 'lastInteraction' | 'memberCount' | 'phone';
+// ============================================================================
+// URGENCY CALCULATION - Smart fallback logic
+// Uses AI-extracted days if available, otherwise calculates from lastInteraction
+// ============================================================================
+
+// Parse days waiting from status reason (format: "[5d waiting] Summary text...")
+function parseDaysWaiting(statusReason: string | null): number | null {
+  if (!statusReason) return null;
+  const match = statusReason.match(/^\[(\d+)d waiting\]/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+// Calculate days since last interaction from ISO date string
+function calculateDaysSinceLastInteraction(lastInteraction: string | null): number {
+  if (!lastInteraction) return 0;
+  const lastDate = new Date(lastInteraction);
+  const now = new Date();
+  const diffMs = now.getTime() - lastDate.getTime();
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+}
+
+// Get effective days for urgency - uses AI data if available, otherwise calculates
+function getEffectiveDaysInactive(contact: {
+  aiStatusReason: string | null;
+  lastInteraction: string;
+  aiStatus: AiStatus | null;
+}): number {
+  // First try to get AI-extracted days waiting
+  const aiDays = parseDaysWaiting(contact.aiStatusReason);
+  if (aiDays !== null) return aiDays;
+
+  // Fallback: calculate from lastInteraction (only if status suggests customer waiting)
+  if (contact.aiStatus === 'needs_owner' || contact.aiStatus === 'at_risk') {
+    return calculateDaysSinceLastInteraction(contact.lastInteraction);
+  }
+
+  return 0;
+}
+
+// Get clean summary without the days prefix
+function getCleanSummary(statusReason: string | null): string {
+  if (!statusReason) return '';
+  return statusReason.replace(/^\[\d+d waiting\]\s*/, '').trim();
+}
+
+// ============================================================================
+// LINEAR DESIGN SYSTEM - Urgency Colors
+// Red = Critical/Urgent, Orange = Warning, Blue = Active, Green = Good, Gray = Neutral
+// ============================================================================
+
+// Urgency-based colors with smart escalation - Linear Design System
+function getUrgencyColor(status: AiStatus | null, daysInactive: number): string {
+  // Time-based escalation overrides status color
+  if (daysInactive >= 7) return '#DC2626'; // Deep red - critical
+  if (daysInactive >= 5) return '#EF4444'; // Red - urgent
+  if (daysInactive >= 3) return '#F97316'; // Orange - warning
+
+  // Status-based colors (Customer + Partner)
+  switch (status) {
+    // Customer statuses
+    case 'needs_owner':
+      return '#EF4444'; // Red - needs Shalin
+    case 'at_risk':
+      return '#F97316'; // Orange - needs attention
+    case 'team_handling':
+      return '#3B82F6'; // Blue - in progress
+    case 'resolved':
+      return '#22C55E'; // Green - complete
+    case 'monitoring':
+      return '#6B7280'; // Gray - passive
+    // Partner statuses - Linear-style vibrant colors
+    case 'committed':
+      return '#10B981'; // Emerald - locked in
+    case 'active':
+      return '#3B82F6'; // Blue - engaged
+    case 'high_potential':
+      return '#8B5CF6'; // Purple - priority
+    case 'nurturing':
+      return '#F59E0B'; // Amber - warming up
+    case 'dormant':
+      return '#EF4444'; // Red - needs re-engagement
+    default:
+      return '#6B7280'; // Gray - default
+  }
+}
+
+// Background tints for badges (12% opacity versions) - Linear Design System
+function getUrgencyBgColor(status: AiStatus | null, daysInactive: number): string {
+  if (daysInactive >= 7) return 'rgba(220, 38, 38, 0.12)';
+  if (daysInactive >= 5) return 'rgba(239, 68, 68, 0.12)';
+  if (daysInactive >= 3) return 'rgba(249, 115, 22, 0.12)';
+
+  switch (status) {
+    // Customer statuses
+    case 'needs_owner':
+      return 'rgba(239, 68, 68, 0.12)';
+    case 'at_risk':
+      return 'rgba(249, 115, 22, 0.12)';
+    case 'team_handling':
+      return 'rgba(59, 130, 246, 0.12)';
+    case 'resolved':
+      return 'rgba(34, 197, 94, 0.12)';
+    case 'monitoring':
+      return 'rgba(107, 114, 128, 0.08)';
+    // Partner statuses
+    case 'committed':
+      return 'rgba(16, 185, 129, 0.12)'; // Emerald
+    case 'active':
+      return 'rgba(59, 130, 246, 0.12)'; // Blue
+    case 'high_potential':
+      return 'rgba(139, 92, 246, 0.12)'; // Purple
+    case 'nurturing':
+      return 'rgba(245, 158, 11, 0.12)'; // Amber
+    case 'dormant':
+      return 'rgba(239, 68, 68, 0.12)'; // Red
+    default:
+      return 'rgba(107, 114, 128, 0.08)';
+  }
+}
+
+// ============================================================================
+// STATUS LABELS - Human-readable status names
+// ============================================================================
+
+function getStatusLabel(status: AiStatus | null): string {
+  if (!status) return 'Review';
+
+  // Status label mapping (supports both Customer and Partner statuses)
+  const statusLabels: Record<string, string> = {
+    // Customer statuses
+    needs_owner: 'Needs Owner',
+    at_risk: 'At Risk',
+    team_handling: 'Team Handling',
+    resolved: 'Resolved',
+    monitoring: 'Monitoring',
+    // Partner statuses
+    nurturing: 'Nurturing',
+    high_potential: 'High Potential',
+    active: 'Active',
+    dormant: 'Dormant',
+    committed: 'Committed',
+  };
+
+  return statusLabels[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// ============================================================================
+// ACTION LABELS - Tell user what to DO (used in badge display)
+// PRIORITY: Use AI's actual action recommendation when available
+// ============================================================================
+
+type AiAction = 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | 'Send Intro' | 'Follow Up' | 'Nurture' | null;
+
+// Get action label from AI's recommendation (preferred) or fallback to status-based
+function getActionLabelFromAI(aiAction: AiAction, status: AiStatus | null, daysInactive: number): string {
+  // PRIORITY 1: Use AI's actual action recommendation if available
+  if (aiAction) {
+    return aiAction; // "Reply Now", "Schedule Call", "Send Resource", etc.
+  }
+
+  // PRIORITY 2: Time-based urgency when no AI recommendation
+  if (daysInactive >= 7) return 'Reply now';
+  if (daysInactive >= 5) return 'Follow up';
+  if (daysInactive >= 3) return 'Check in';
+
+  // PRIORITY 3: Status-based fallback (for conversations without AI analysis)
+  switch (status) {
+    case 'needs_owner':
+      return 'Escalate';
+    case 'at_risk':
+      return 'Follow up';
+    case 'team_handling':
+      return 'In progress';
+    case 'resolved':
+      return 'On track';
+    case 'monitoring':
+      return 'Monitor';
+    // Partner statuses
+    case 'nurturing':
+      return 'Nurture';
+    case 'high_potential':
+      return 'Prioritize';
+    case 'active':
+      return 'Maintain';
+    case 'dormant':
+      return 'Re-engage';
+    case 'committed':
+      return 'Support';
+    default:
+      return 'Review';
+  }
+}
+
+// Legacy function - kept for backward compatibility but now just wraps the new function
+function getActionLabel(status: AiStatus | null, daysInactive: number): string {
+  return getActionLabelFromAI(null, status, daysInactive);
+}
+
+// Get urgency level for styling decisions
+// PRIORITY: Use AI's actual urgency level when available
+function getUrgencyLevelFromAI(
+  aiUrgency: 'critical' | 'high' | 'medium' | 'low' | null,
+  aiAction: AiAction,
+  status: AiStatus | null,
+  daysInactive: number
+): 'critical' | 'high' | 'medium' | 'low' {
+  // PRIORITY 1: Use AI's actual urgency level if available
+  if (aiUrgency) {
+    return aiUrgency;
+  }
+
+  // PRIORITY 2: Derive urgency from AI action
+  if (aiAction) {
+    switch (aiAction) {
+      case 'Reply Now':
+      case 'Escalate':
+        return 'critical';
+      case 'Schedule Call':
+      case 'Follow Up':
+        return 'high';
+      case 'Send Resource':
+      case 'Check In':
+      case 'Send Intro':
+        return 'medium';
+      case 'On Track':
+      case 'Monitor':
+      case 'Nurture':
+        return 'low';
+    }
+  }
+
+  // PRIORITY 3: Fallback to legacy logic
+  if (daysInactive >= 7 || status === 'needs_owner') return 'critical';
+  if (daysInactive >= 5 || status === 'at_risk') return 'high';
+  if (daysInactive >= 3) return 'medium';
+  return 'low';
+}
+
+// Legacy function - kept for backward compatibility
+function getUrgencyLevel(status: AiStatus | null, daysInactive: number): 'critical' | 'high' | 'medium' | 'low' {
+  return getUrgencyLevelFromAI(null, null, status, daysInactive);
+}
+
+// Legacy functions for backwards compatibility
+function getAiStatusColor(status: AiStatus): string {
+  return getUrgencyColor(status, 0);
+}
+
+function getAiStatusLabel(status: AiStatus): string {
+  return getActionLabel(status, 0);
+}
+
+// Priority level for sorting (1 = highest priority)
+function getAiStatusPriority(status: AiStatus): number {
+  switch (status) {
+    // Customer statuses
+    case 'needs_owner':
+      return 1;
+    case 'at_risk':
+      return 2;
+    case 'team_handling':
+      return 3;
+    case 'monitoring':
+      return 4;
+    case 'resolved':
+      return 5;
+    // Partner statuses - sort by engagement potential
+    case 'dormant':
+      return 1; // Needs attention
+    case 'high_potential':
+      return 2; // Worth pursuing
+    case 'nurturing':
+      return 3; // Building
+    case 'active':
+      return 4; // Healthy
+    case 'committed':
+      return 5; // Locked in
+    default:
+      return 6;
+  }
+}
+
+// Partner-specific color based on urgency level (for action display)
+function getPartnerUrgencyColor(urgencyLevel: 'critical' | 'high' | 'medium' | 'low'): string {
+  switch (urgencyLevel) {
+    case 'critical': return '#DC2626'; // Red
+    case 'high': return '#F97316'; // Orange
+    case 'medium': return '#3B82F6'; // Blue
+    case 'low': return '#22C55E'; // Green
+  }
+}
+
+function getPartnerUrgencyBgColor(urgencyLevel: 'critical' | 'high' | 'medium' | 'low'): string {
+  switch (urgencyLevel) {
+    case 'critical': return 'rgba(220, 38, 38, 0.12)';
+    case 'high': return 'rgba(249, 115, 22, 0.12)';
+    case 'medium': return 'rgba(59, 130, 246, 0.12)';
+    case 'low': return 'rgba(34, 197, 94, 0.12)';
+  }
+}
+
+// Re-export LastActiveFilter from ContactFilterBar for consistency
+// (Used for type-checking the local LAST_ACTIVE_FILTERS array)
+type LocalLastActiveFilter = typeof LAST_ACTIVE_FILTERS[number]['key'];
+
+type SortKey = 'name' | 'type' | 'lastInteraction' | 'memberCount' | 'phone' | 'aiStatus';
 type SortDirection = 'asc' | 'desc';
 
 // Quick filter counts from server (accurate totals)
@@ -113,21 +450,23 @@ interface QuickFilterCounts {
   needFollowUp?: number;
 }
 
-// Import QuickFilterType from SmartFilterSection
-import type { QuickFilterType } from './SmartFilterSection';
+// QuickFilterType - simplified since SmartFilterSection was removed
+type QuickFilterType = 'active7d' | 'active30d' | 'untagged' | 'highVolume' | 'newThisWeek' | 'needFollowUp' | 'noReply';
 
 interface ContactsTableProps {
   contacts: Contact[];
   onSelect: (contact: Contact) => void;
-  typeFilter: 'all' | 'people' | 'groups' | 'channels';
-  onTypeFilterChange: (filter: 'all' | 'people' | 'groups' | 'channels') => void;
-  counts: { all: number; people: number; groups: number; channels: number };
+  typeFilter?: TypeFilter; // Contact type filter
+  onTypeFilterChange?: (type: TypeFilter) => void;
+  counts: { all: number; people: number; groups: number; channels: number }; // Filtered counts for Type dropdown
+  unfilteredTotalCount?: number | null; // Unfiltered total for "All" primary box
   quickFilterCounts?: QuickFilterCounts; // Server-calculated accurate counts
   onExportCsv?: () => void;
   allTags?: Tag[];
   onTagsChange?: (contactId: string, tags: { id: string; name: string; color: string | null }[]) => void;
   onBulkTagsChange?: (contactIds: string[], tags: { id: string; name: string; color: string | null }[]) => void;
   isLoading?: boolean; // Initial load only - shows skeleton
+  isFiltering?: boolean; // True when filter is being applied (shows subtle overlay)
   // Infinite scroll props
   hasMore?: boolean;
   isLoadingMore?: boolean;
@@ -137,20 +476,30 @@ interface ContactsTableProps {
   // Server-side quick filter support
   onQuickFilterChange?: (filterType: QuickFilterType | null) => void;
   activeQuickFilter?: QuickFilterType | null;
+  // Unified filter bar (tags + last active) - supports multi-select
+  activeTagFilters?: string[]; // Changed to array for multi-select
+  onTagFilterChange?: (tagIds: string[]) => void; // Changed to accept array
+  lastActiveFilters?: LastActiveFilter[]; // Changed to array for multi-select
+  onLastActiveFiltersChange?: (filters: LastActiveFilter[]) => void; // Changed to accept array
+  // AI Settings
+  onAISettings?: () => void;
+  hasAiEnabledTag?: boolean;
 }
 
 export default function ContactsTable({
   contacts,
   onSelect,
-  typeFilter,
+  typeFilter = 'all',
   onTypeFilterChange,
   counts,
+  unfilteredTotalCount,
   quickFilterCounts,
   onExportCsv,
   allTags = [],
   onTagsChange,
   onBulkTagsChange,
   isLoading = false,
+  isFiltering = false,
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
@@ -158,21 +507,24 @@ export default function ContactsTable({
   isSearching = false,
   onQuickFilterChange,
   activeQuickFilter,
+  activeTagFilters = [],
+  onTagFilterChange,
+  lastActiveFilters: propLastActiveFilters,
+  onLastActiveFiltersChange,
+  onAISettings,
+  hasAiEnabledTag = false,
 }: ContactsTableProps) {
   const isMobile = useIsMobile();
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('lastInteraction');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
-  const [lastActiveFilter, setLastActiveFilter] = useState<LastActiveFilter>('all');
+  // Use prop if provided, otherwise use local state (for backward compatibility)
+  const [localLastActiveFilters, setLocalLastActiveFilters] = useState<LastActiveFilter[]>(['all']);
+  const lastActiveFilters = propLastActiveFilters ?? localLastActiveFilters;
+  const setLastActiveFilters = onLastActiveFiltersChange ?? setLocalLastActiveFilters;
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false);
   const [isLastActiveDropdownOpen, setIsLastActiveDropdownOpen] = useState(false);
-
-  // Smart filter state
-  const [isSmartFilterExpanded, setIsSmartFilterExpanded] = useState(false);
-  const [smartFilteredIds, setSmartFilteredIds] = useState<string[] | null>(null);
-  const [smartFilterDescription, setSmartFilterDescription] = useState<string | null>(null);
-  const [filterClearSignal, setFilterClearSignal] = useState(0); // Signal to clear SmartFilterSection state
 
   // Multi-select state
   const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
@@ -184,23 +536,12 @@ export default function ContactsTable({
   const bulkTagSearchInputRef = useRef<HTMLInputElement>(null);
   const newBulkTagInputRef = useRef<HTMLInputElement>(null);
 
-  // Smart filter bulk tag state
-  const [isSmartFilterTagDropdownOpen, setIsSmartFilterTagDropdownOpen] = useState(false);
-  const [isApplyingBulkTag, setIsApplyingBulkTag] = useState(false);
-  const [smartFilterTagSearchQuery, setSmartFilterTagSearchQuery] = useState('');
-  const [isCreatingSmartFilterTag, setIsCreatingSmartFilterTag] = useState(false);
-  const [newSmartFilterTagName, setNewSmartFilterTagName] = useState('');
-  const smartFilterTagDropdownRef = useRef<HTMLDivElement>(null);
-  const smartFilterTagSearchInputRef = useRef<HTMLInputElement>(null);
-  const newSmartFilterTagInputRef = useRef<HTMLInputElement>(null);
-
   const tagDropdownRef = useRef<HTMLDivElement>(null);
   const lastActiveDropdownRef = useRef<HTMLDivElement>(null);
 
   // Infinite scroll refs
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
-  const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
   // Intersection observer for infinite scroll
   useEffect(() => {
@@ -222,33 +563,9 @@ export default function ContactsTable({
     return () => observer.disconnect();
   }, [onLoadMore, hasMore, isLoadingMore, isLoading]);
 
-  // WORLD-CLASS SEARCH: Debounced server search with instant local filtering
-  // - Instant: Local filter shows results immediately as you type
-  // - Background: Server search runs after 400ms debounce for accurate results
-  const prevSearchRef = useRef('');
-
-  useEffect(() => {
-    if (!onSearch) return;
-
-    // Skip if search hasn't actually changed
-    if (prevSearchRef.current === search) return;
-    prevSearchRef.current = search;
-
-    if (searchDebounceRef.current) {
-      clearTimeout(searchDebounceRef.current);
-    }
-
-    // Longer debounce (400ms) - local filtering handles immediate feedback
-    searchDebounceRef.current = setTimeout(() => {
-      onSearch(search);
-    }, 400);
-
-    return () => {
-      if (searchDebounceRef.current) {
-        clearTimeout(searchDebounceRef.current);
-      }
-    };
-  }, [search, onSearch]);
+  // INSTANT SEARCH: Pure client-side filtering for fast response
+  // For datasets under 1000 contacts, client-side is faster than any server call
+  // No debounce needed - filtering is instant
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -263,12 +580,6 @@ export default function ContactsTable({
         setIsBulkTagDropdownOpen(false);
         setBulkTagSearchQuery('');
       }
-      if (smartFilterTagDropdownRef.current && !smartFilterTagDropdownRef.current.contains(e.target as Node)) {
-        setIsSmartFilterTagDropdownOpen(false);
-        setSmartFilterTagSearchQuery('');
-        setIsCreatingSmartFilterTag(false);
-        setNewSmartFilterTagName('');
-      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -280,13 +591,6 @@ export default function ContactsTable({
       setTimeout(() => bulkTagSearchInputRef.current?.focus(), 10);
     }
   }, [isBulkTagDropdownOpen]);
-
-  // Focus smart filter tag search when dropdown opens
-  useEffect(() => {
-    if (isSmartFilterTagDropdownOpen) {
-      setTimeout(() => smartFilterTagSearchInputRef.current?.focus(), 10);
-    }
-  }, [isSmartFilterTagDropdownOpen]);
 
   // Clear selection when contacts change (e.g., type filter changes)
   useEffect(() => {
@@ -318,17 +622,23 @@ export default function ContactsTable({
     );
   }, [contacts, search]);
 
-  // Filter by tags
+  // Filter by tags - NOW SERVER-SIDE via TagFilterBar (multi-select)
+  // Previously filtered client-side, now server handles tag filtering
+  // We keep this memo for backward compatibility with client-side selectedTagIds if still used
   const tagFiltered = useMemo(() => {
+    // If server-side tag filter is active (via activeTagFilters), don't filter client-side
+    if (activeTagFilters.length > 0) return searchFiltered;
+    // Legacy client-side filtering (kept for backward compatibility)
     if (selectedTagIds.length === 0) return searchFiltered;
     return searchFiltered.filter(c =>
       c.tags?.some(t => selectedTagIds.includes(t.id))
     );
-  }, [searchFiltered, selectedTagIds]);
+  }, [searchFiltered, selectedTagIds, activeTagFilters]);
 
-  // Filter by last active
+  // Filter by last active (now supports multi-select - OR logic)
   const lastActiveFiltered = useMemo(() => {
-    if (lastActiveFilter === 'all') return tagFiltered;
+    // If 'all' is selected or no filters, show everything
+    if (lastActiveFilters.includes('all') || lastActiveFilters.length === 0) return tagFiltered;
 
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -338,34 +648,29 @@ export default function ContactsTable({
 
     return tagFiltered.filter(c => {
       const lastActive = new Date(c.lastInteraction);
-      switch (lastActiveFilter) {
-        case 'today':
-          return lastActive >= todayStart;
-        case 'week':
-          return lastActive >= weekStart;
-        case 'month':
-          return lastActive >= monthStart;
-        case '3months':
-          return lastActive >= threeMonthsStart;
-        case 'older':
-          return lastActive < threeMonthsStart;
-        default:
-          return true;
-      }
+      // OR logic: contact matches if it matches ANY of the selected filters
+      return lastActiveFilters.some(filter => {
+        switch (filter) {
+          case 'today':
+            return lastActive >= todayStart;
+          case 'week':
+            return lastActive >= weekStart;
+          case 'month':
+            return lastActive >= monthStart;
+          case '3months':
+            return lastActive >= threeMonthsStart;
+          case 'older':
+            return lastActive < threeMonthsStart;
+          default:
+            return true;
+        }
+      });
     });
-  }, [tagFiltered, lastActiveFilter]);
-
-  // Apply smart filter (replaces tag and lastActive filters when active)
-  const smartFiltered = useMemo(() => {
-    if (smartFilteredIds === null) return lastActiveFiltered;
-    // When smart filter is active, filter by the IDs but start from searchFiltered
-    // (ignoring tag and lastActive filters per the design spec)
-    return searchFiltered.filter(c => smartFilteredIds.includes(c.id));
-  }, [searchFiltered, lastActiveFiltered, smartFilteredIds]);
+  }, [tagFiltered, lastActiveFilters]);
 
   // Sort contacts
   const sorted = useMemo(() => {
-    return [...smartFiltered].sort((a, b) => {
+    return [...lastActiveFiltered].sort((a, b) => {
       let comparison = 0;
       switch (sortKey) {
         case 'name':
@@ -373,9 +678,6 @@ export default function ContactsTable({
           break;
         case 'type':
           comparison = a.type.localeCompare(b.type);
-          break;
-        case 'totalMessages':
-          comparison = a.totalMessages - b.totalMessages;
           break;
         case 'lastInteraction':
           comparison = new Date(a.lastInteraction).getTime() - new Date(b.lastInteraction).getTime();
@@ -386,10 +688,16 @@ export default function ContactsTable({
         case 'phone':
           comparison = (a.phone || '').localeCompare(b.phone || '');
           break;
+        case 'aiStatus':
+          // Sort by priority (1 = highest priority, needs action first)
+          const priorityA = a.aiStatus ? getAiStatusPriority(a.aiStatus) : 99;
+          const priorityB = b.aiStatus ? getAiStatusPriority(b.aiStatus) : 99;
+          comparison = priorityA - priorityB;
+          break;
       }
       return sortDirection === 'asc' ? comparison : -comparison;
     });
-  }, [smartFiltered, sortKey, sortDirection]);
+  }, [lastActiveFiltered, sortKey, sortDirection]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -411,17 +719,6 @@ export default function ContactsTable({
   const clearTagFilters = () => {
     setSelectedTagIds([]);
     setIsTagDropdownOpen(false);
-  };
-
-  // Smart filter handler
-  const handleSmartFilterChange = (filteredIds: string[] | null, description?: string) => {
-    setSmartFilteredIds(filteredIds);
-    setSmartFilterDescription(description || null);
-    // Clear other filters when smart filter is applied
-    if (filteredIds !== null) {
-      setSelectedTagIds([]);
-      setLastActiveFilter('all');
-    }
   };
 
   // Multi-select handlers
@@ -449,74 +746,12 @@ export default function ContactsTable({
     setSelectedContactIds(new Set());
   };
 
-  // Smart filter bulk tag handler
-  const handleSmartFilterBulkTag = async (tagId: string) => {
-    if (!smartFilteredIds || smartFilteredIds.length === 0) return;
-
-    setIsApplyingBulkTag(true);
-    try {
-      const response = await fetch('/api/contacts/bulk-tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationIds: smartFilteredIds,
-          tagId,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to apply tag');
-      }
-
-      const result = await response.json();
-      console.log('Bulk tag result:', result);
-
-      // Update the local state for contacts that were tagged
-      if (onBulkTagsChange) {
-        const tag = availableTags.find(t => t.id === tagId);
-        if (tag) {
-          // Get contacts that don't already have this tag
-          const contactsToUpdate = sorted
-            .filter(c => smartFilteredIds.includes(c.id))
-            .filter(c => !c.tags?.some(t => t.id === tagId))
-            .map(c => c.id);
-
-          if (contactsToUpdate.length > 0) {
-            // For each contact, add the new tag to their existing tags
-            contactsToUpdate.forEach(contactId => {
-              const contact = sorted.find(c => c.id === contactId);
-              if (contact && onTagsChange) {
-                const newTags = [...(contact.tags || []), { id: tag.id, name: tag.name, color: tag.color }];
-                onTagsChange(contactId, newTags);
-              }
-            });
-          }
-        }
-      }
-
-      setIsSmartFilterTagDropdownOpen(false);
-    } catch (error) {
-      console.error('Error applying bulk tag:', error);
-    } finally {
-      setIsApplyingBulkTag(false);
-    }
-    setIsBulkTagDropdownOpen(false);
-    setBulkTagSearchQuery('');
-  };
-
   // Filter tags for bulk dropdown
   const filteredBulkTags = useMemo(() => {
     if (!bulkTagSearchQuery.trim()) return availableTags;
     const query = bulkTagSearchQuery.toLowerCase();
     return availableTags.filter(tag => tag.name.toLowerCase().includes(query));
   }, [availableTags, bulkTagSearchQuery]);
-
-  // Filter tags for smart filter bulk dropdown
-  const filteredSmartFilterTags = useMemo(() => {
-    if (!smartFilterTagSearchQuery.trim()) return availableTags;
-    const query = smartFilterTagSearchQuery.toLowerCase();
-    return availableTags.filter(tag => tag.name.toLowerCase().includes(query));
-  }, [availableTags, smartFilterTagSearchQuery]);
 
   // Handle bulk tag assignment
   // Logic: If ALL selected contacts have the tag -> remove from ALL
@@ -595,78 +830,6 @@ export default function ContactsTable({
     }
   };
 
-  // Create a new tag and assign to all smart-filtered contacts
-  const createSmartFilterTag = async (tagName: string) => {
-    if (!tagName.trim() || !smartFilteredIds || smartFilteredIds.length === 0) return;
-
-    setIsApplyingBulkTag(true);
-    try {
-      // Generate a random color from AVATAR_COLORS (use .bg which is the hex string)
-      const randomColor = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)].bg;
-
-      // Create the tag via API
-      const response = await fetch('/api/tags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: tagName.trim(),
-          color: randomColor,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create tag');
-      }
-
-      const result = await response.json();
-      const newTag = result.data;
-
-      // Apply tag to all smart-filtered contacts via API
-      const bulkResponse = await fetch('/api/contacts/bulk-tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contactIds: smartFilteredIds,
-          tagId: newTag.id,
-          action: 'add',
-        }),
-      });
-
-      if (bulkResponse.ok) {
-        // Update local state for visible contacts
-        const sorted = contacts;
-        const contactsToUpdate = smartFilteredIds!.filter(id => sorted.some(c => c.id === id));
-
-        if (contactsToUpdate.length > 0) {
-          contactsToUpdate.forEach(contactId => {
-            const contact = sorted.find(c => c.id === contactId);
-            if (contact && onTagsChange) {
-              const newTags = [...(contact.tags || []), { id: newTag.id, name: newTag.name, color: newTag.color }];
-              onTagsChange(contactId, newTags);
-            }
-          });
-        }
-      }
-
-      // Reset state
-      setNewSmartFilterTagName('');
-      setIsCreatingSmartFilterTag(false);
-      setSmartFilterTagSearchQuery('');
-      setIsSmartFilterTagDropdownOpen(false);
-    } catch (error) {
-      console.error('Failed to create smart filter tag:', error);
-    } finally {
-      setIsApplyingBulkTag(false);
-    }
-  };
-
-  const filterTabs = [
-    { key: 'all' as const, label: 'All', count: counts.all },
-    { key: 'people' as const, label: 'People', count: counts.people },
-    { key: 'groups' as const, label: 'Groups', count: counts.groups },
-    { key: 'channels' as const, label: 'Channels', count: counts.channels },
-  ];
-
   const SortIcon = ({ active, direction }: { active: boolean; direction: SortDirection }) => (
     <svg
       width="12"
@@ -690,284 +853,65 @@ export default function ContactsTable({
   const showPhoneColumn = typeFilter === 'people';
   const showMembersColumn = typeFilter === 'groups' || typeFilter === 'channels';
 
+  // Check if any filters are active (hide bulk selection when filtered)
+  const hasActiveFilters = activeTagFilters.length > 0 ||
+    !lastActiveFilters.includes('all') ||
+    typeFilter !== 'all' ||
+    (search && search.length > 0);
+
+  // Show AI columns ONLY when:
+  // 1. A tag filter is active (user has filtered by at least one tag)
+  // 2. AND some contacts in the filtered list have AI enabled
+  const showAiColumns = useMemo(() => {
+    if (activeTagFilters.length === 0) return false;
+    return contacts.some(c => c.hasAiEnabled);
+  }, [contacts, activeTagFilters]);
+
+  // Tags for filter bar (single-select) - use server counts
+  const tagsForFilterBar = useMemo(() => {
+    return allTags.map(tag => ({
+      id: tag.id,
+      name: tag.name,
+      color: tag.color,
+      conversationCount: tag.conversationCount || 0,
+    }));
+  }, [allTags]);
+
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
-      {/* Header */}
-      <div style={{
-        padding: isMobile ? '12px 16px' : '16px 24px',
-        borderBottom: '1px solid var(--border-subtle)',
-        display: 'flex',
-        flexDirection: isMobile ? 'column' : 'row',
-        alignItems: isMobile ? 'stretch' : 'center',
-        justifyContent: 'space-between',
-        gap: isMobile ? '12px' : '16px',
-      }}>
-        {/* Left: Title + Filters */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '12px' : '16px', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
-          <h1 style={{
-            fontSize: isMobile ? '16px' : '15px',
-            fontWeight: 600,
-            color: 'var(--text-primary)',
-            margin: 0,
-            letterSpacing: '-0.01em',
-          }}>
-            Contacts
-          </h1>
+      {/* Unified Filter Bar (Tags + Last Active + More Filters + Search + Export) - Linear style */}
+      {onTagFilterChange && !isMobile && (
+        <ContactFilterBar
+          tags={tagsForFilterBar}
+          selectedTagIds={activeTagFilters}
+          onTagSelect={onTagFilterChange}
+          totalCount={unfilteredTotalCount ?? counts.all} // Use unfiltered for "All" box, fallback to filtered
+          lastActiveFilters={lastActiveFilters}
+          onLastActiveChange={setLastActiveFilters}
+          typeFilter={typeFilter}
+          onTypeFilterChange={onTypeFilterChange}
+          typeCounts={counts} // Filtered counts for Type dropdown
+          isLoading={isFiltering}
+          isCountsLoading={isLoading && unfilteredTotalCount === null} // Show skeleton during initial load
+          // Search props
+          search={search}
+          onSearchChange={setSearch}
+          isSearching={isSearching}
+          // Export props
+          onExport={onExportCsv}
+          // AI Settings props
+          onAISettings={onAISettings}
+          hasAiEnabledTag={hasAiEnabledTag}
+        />
+      )}
 
-          {/* Type Filters - Linear-style segmented control */}
-          <div style={{
-            display: 'flex',
-            gap: '1px',
-            padding: '2px',
-            background: 'var(--bg-tertiary)',
-            borderRadius: '6px',
-          }}>
-            {filterTabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => onTypeFilterChange(tab.key)}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '12px',
-                  fontWeight: 500,
-                  color: typeFilter === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                  background: typeFilter === tab.key ? 'var(--bg-primary)' : 'transparent',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  transition: 'all 150ms ease',
-                  boxShadow: typeFilter === tab.key ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
-                }}
-              >
-                {tab.label}
-                <span style={{
-                  marginLeft: '4px',
-                  color: 'var(--text-quaternary)',
-                  fontSize: '11px',
-                }}>
-                  {tab.count}
-                </span>
-              </button>
-            ))}
-          </div>
-
-          {/* Tag Filter Dropdown - Hidden on mobile and when smart filter is active */}
-          {!isMobile && !smartFilterDescription && <div ref={tagDropdownRef} style={{ position: 'relative' }}>
-            <button
-              onClick={() => {
-                setIsTagDropdownOpen(!isTagDropdownOpen);
-                setIsLastActiveDropdownOpen(false);
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '5px 10px',
-                fontSize: '12px',
-                fontWeight: 500,
-                color: selectedTagIds.length > 0 ? 'var(--accent-primary)' : 'var(--text-tertiary)',
-                background: selectedTagIds.length > 0 ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
-                border: `1px solid ${selectedTagIds.length > 0 ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-                borderRadius: '6px',
-                cursor: 'pointer',
-                transition: 'all 150ms ease',
-              }}
-            >
-              <TagIcon size={12} />
-              {selectedTagIds.length > 0 ? `${selectedTagIds.length} tag${selectedTagIds.length > 1 ? 's' : ''}` : 'Tags'}
-              <ChevronDownIcon size={10} />
-            </button>
-
-            {isTagDropdownOpen && (
-              <div style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                marginTop: '4px',
-                minWidth: '200px',
-                maxHeight: '300px',
-                overflowY: 'auto',
-                background: 'var(--bg-primary)',
-                border: '1px solid var(--border-default)',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                zIndex: 100,
-              }}>
-                {/* Header */}
-                <div style={{
-                  padding: '8px 12px',
-                  borderBottom: '1px solid var(--border-subtle)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}>
-                  <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Filter by tag
-                  </span>
-                  {selectedTagIds.length > 0 && (
-                    <button
-                      onClick={clearTagFilters}
-                      style={{
-                        fontSize: '11px',
-                        color: 'var(--text-tertiary)',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-                {/* Tag list */}
-                <div style={{ padding: '4px' }}>
-                  {availableTags.length === 0 ? (
-                    <div style={{ padding: '12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                      No tags found
-                    </div>
-                  ) : (
-                    availableTags.map(tag => (
-                      <button
-                        key={tag.id}
-                        onClick={() => toggleTagFilter(tag.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          width: '100%',
-                          padding: '8px',
-                          fontSize: '13px',
-                          color: 'var(--text-primary)',
-                          background: selectedTagIds.includes(tag.id) ? 'var(--bg-tertiary)' : 'transparent',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                        }}
-                      >
-                        <span style={{
-                          width: '14px',
-                          height: '14px',
-                          borderRadius: '3px',
-                          border: selectedTagIds.includes(tag.id) ? 'none' : '1px solid var(--border-default)',
-                          background: selectedTagIds.includes(tag.id) ? 'var(--accent-primary)' : 'transparent',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}>
-                          {selectedTagIds.includes(tag.id) && (
-                            <CheckIcon size={10} color="white" />
-                          )}
-                        </span>
-                        <span style={{
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          background: tag.color || 'var(--text-quaternary)',
-                        }} />
-                        {tag.name}
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-          </div>}
-
-          {/* Last Active Filter Dropdown - Hidden on mobile and when smart filter is active */}
-          {!isMobile && !smartFilterDescription && <div ref={lastActiveDropdownRef} style={{ position: 'relative' }}>
-            <button
-              onClick={() => {
-                setIsLastActiveDropdownOpen(!isLastActiveDropdownOpen);
-                setIsTagDropdownOpen(false);
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '5px 10px',
-                fontSize: '12px',
-                fontWeight: 500,
-                color: lastActiveFilter !== 'all' ? 'var(--accent-primary)' : 'var(--text-tertiary)',
-                background: lastActiveFilter !== 'all' ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
-                border: `1px solid ${lastActiveFilter !== 'all' ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-                borderRadius: '6px',
-                cursor: 'pointer',
-                transition: 'all 150ms ease',
-              }}
-            >
-              <ClockIcon size={12} />
-              {LAST_ACTIVE_FILTERS.find(f => f.key === lastActiveFilter)?.label || 'Last active'}
-              <ChevronDownIcon size={10} />
-            </button>
-
-            {isLastActiveDropdownOpen && (
-              <div style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                marginTop: '4px',
-                minWidth: '160px',
-                background: 'var(--bg-primary)',
-                border: '1px solid var(--border-default)',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                zIndex: 100,
-                padding: '4px',
-              }}>
-                {LAST_ACTIVE_FILTERS.map(filter => (
-                  <button
-                    key={filter.key}
-                    onClick={() => {
-                      setLastActiveFilter(filter.key);
-                      setIsLastActiveDropdownOpen(false);
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      width: '100%',
-                      padding: '8px 10px',
-                      fontSize: '13px',
-                      color: lastActiveFilter === filter.key ? 'var(--accent-primary)' : 'var(--text-primary)',
-                      background: lastActiveFilter === filter.key ? 'var(--bg-tertiary)' : 'transparent',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                    }}
-                  >
-                    {lastActiveFilter === filter.key && <CheckIcon size={12} color="var(--accent-primary)" />}
-                    <span style={{ marginLeft: lastActiveFilter === filter.key ? 0 : '20px' }}>
-                      {filter.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>}
-        </div>
-
-        {/* Right: Smart Filter + Search + Export */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: isMobile ? 1 : 'none' }}>
-          {/* Smart Filter Toggle (collapsed state) */}
-          {!isSmartFilterExpanded && !isMobile && (
-            <SmartFilterSection
-              contacts={contacts}
-              onFilterChange={handleSmartFilterChange}
-              availableTags={availableTags}
-              isExpanded={isSmartFilterExpanded}
-              onToggleExpand={() => setIsSmartFilterExpanded(true)}
-              externalClearSignal={filterClearSignal}
-              serverQuickFilterCounts={quickFilterCounts}
-              onQuickFilterChange={onQuickFilterChange}
-              activeServerQuickFilter={activeQuickFilter}
-            />
-          )}
-          {/* Search - with subtle loading indicator */}
-          <div className="relative" style={{ flex: isMobile ? 1 : 'none' }}>
-            {/* Show spinner when searching, otherwise show search icon */}
+      {/* Mobile header with search */}
+      {isMobile && (
+        <div style={{
+          padding: '12px 16px',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>
+          <div className="relative">
             {isSearching ? (
               <div
                 className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
@@ -983,466 +927,24 @@ export default function ContactsTable({
             )}
             <input
               type="text"
-              placeholder="Search..."
+              placeholder="Search contacts..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{
-                width: isMobile ? '100%' : '180px',
-                height: '30px',
+                width: '100%',
+                height: '36px',
                 paddingLeft: '32px',
                 paddingRight: '12px',
-                fontSize: '12px',
+                fontSize: '14px',
                 color: 'var(--text-primary)',
                 background: 'var(--bg-secondary)',
                 border: '1px solid var(--border-default)',
-                borderRadius: '6px',
+                borderRadius: '8px',
                 outline: 'none',
               }}
               className="placeholder:text-[var(--text-quaternary)] focus:border-[var(--accent-primary)]"
             />
           </div>
-
-          {/* Export Button - Hidden on mobile */}
-          {!isMobile && onExportCsv && (
-            <Tooltip content="Export contacts to CSV" position="bottom">
-            <button
-              onClick={onExportCsv}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '5px 10px',
-                fontSize: '12px',
-                fontWeight: 500,
-                color: 'var(--text-secondary)',
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border-default)',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                transition: 'all 150ms ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'var(--bg-tertiary)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'var(--bg-secondary)';
-              }}
-            >
-              <DownloadIcon size={13} />
-              Export
-            </button>
-            </Tooltip>
-          )}
-        </div>
-      </div>
-
-      {/* Smart Filter Section (expanded state) */}
-      {isSmartFilterExpanded && (
-        <div style={{ padding: isMobile ? '12px 16px' : '0 24px', paddingTop: '12px' }}>
-          <SmartFilterSection
-            contacts={contacts}
-            onFilterChange={handleSmartFilterChange}
-            availableTags={availableTags}
-            isExpanded={isSmartFilterExpanded}
-            onToggleExpand={() => setIsSmartFilterExpanded(false)}
-            serverQuickFilterCounts={quickFilterCounts}
-            onQuickFilterChange={onQuickFilterChange}
-            activeServerQuickFilter={activeQuickFilter}
-          />
-        </div>
-      )}
-
-      {/* Smart Filter Active Indicator - Linear-style */}
-      {smartFilterDescription && (
-        <div style={{
-          padding: '10px 24px',
-          borderBottom: '1px solid var(--border-subtle)',
-          borderLeft: '3px solid var(--accent-primary)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          background: 'var(--bg-secondary)',
-        }}>
-          {/* Dismissible filter badge */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '4px 8px 4px 10px',
-            background: 'var(--accent-subtle)',
-            borderRadius: '6px',
-            border: '1px solid var(--accent-muted, rgba(99, 102, 241, 0.2))',
-          }}>
-            <SparkleIcon size={12} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
-            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--accent-primary)' }}>
-              {smartFilterDescription}
-            </span>
-            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: '2px' }}>
-              · {sorted.length}
-            </span>
-            {/* Dismiss × button integrated into badge */}
-            <button
-              onClick={() => {
-                handleSmartFilterChange(null);
-                setFilterClearSignal(s => s + 1); // Signal SmartFilterSection to clear its internal state
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '16px',
-                height: '16px',
-                marginLeft: '4px',
-                color: 'var(--text-tertiary)',
-                background: 'transparent',
-                border: 'none',
-                borderRadius: '3px',
-                cursor: 'pointer',
-                transition: 'all 100ms ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'var(--bg-tertiary)';
-                e.currentTarget.style.color = 'var(--text-primary)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.color = 'var(--text-tertiary)';
-              }}
-              title="Clear filter"
-            >
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
-            </button>
-          </div>
-
-          {/* Tag all button with dropdown - pushed to right */}
-          <div ref={smartFilterTagDropdownRef} style={{ position: 'relative', marginLeft: 'auto' }}>
-            <button
-              onClick={() => setIsSmartFilterTagDropdownOpen(!isSmartFilterTagDropdownOpen)}
-              disabled={isApplyingBulkTag}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px',
-                fontSize: '12px',
-                fontWeight: 500,
-                color: 'var(--text-secondary)',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-default)',
-                borderRadius: '6px',
-                cursor: isApplyingBulkTag ? 'wait' : 'pointer',
-                padding: '5px 10px',
-                opacity: isApplyingBulkTag ? 0.6 : 1,
-                transition: 'all 150ms ease',
-              }}
-              onMouseEnter={(e) => {
-                if (!isApplyingBulkTag) {
-                  e.currentTarget.style.background = 'var(--bg-hover)';
-                  e.currentTarget.style.borderColor = 'var(--border-subtle)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'var(--bg-tertiary)';
-                e.currentTarget.style.borderColor = 'var(--border-default)';
-              }}
-            >
-              <TagIcon size={12} />
-              {isApplyingBulkTag ? 'Tagging...' : 'Tag all'}
-              <ChevronDownIcon size={10} />
-            </button>
-
-            {/* Tag dropdown - full-featured with search and create */}
-            {isSmartFilterTagDropdownOpen && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: '100%',
-                  right: 0,
-                  marginTop: '4px',
-                  width: '240px',
-                  background: 'var(--bg-primary)',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: '8px',
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
-                  zIndex: 1000,
-                }}
-              >
-                {/* Search Input */}
-                <div style={{ padding: '8px', borderBottom: '1px solid var(--border-subtle)' }}>
-                  <input
-                    ref={smartFilterTagSearchInputRef}
-                    type="text"
-                    placeholder="Search labels..."
-                    value={smartFilterTagSearchQuery}
-                    onChange={(e) => setSmartFilterTagSearchQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') {
-                        setIsSmartFilterTagDropdownOpen(false);
-                        setSmartFilterTagSearchQuery('');
-                      }
-                    }}
-                    style={{
-                      width: '100%',
-                      padding: '6px 8px',
-                      fontSize: '12px',
-                      color: 'var(--text-primary)',
-                      background: 'var(--bg-secondary)',
-                      border: '1px solid var(--border-default)',
-                      borderRadius: '4px',
-                      outline: 'none',
-                    }}
-                  />
-                </div>
-
-                {/* Info text */}
-                <div style={{
-                  padding: '6px 12px',
-                  fontSize: '11px',
-                  color: 'var(--text-tertiary)',
-                  borderBottom: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-secondary)',
-                }}>
-                  Apply label to {smartFilteredIds?.length || 0} contact{(smartFilteredIds?.length || 0) !== 1 ? 's' : ''}
-                </div>
-
-                {/* Tag list */}
-                <div style={{ maxHeight: '200px', overflowY: 'auto', padding: '4px' }}>
-                  {filteredSmartFilterTags.length === 0 ? (
-                    <div style={{ padding: '12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                      No labels found
-                    </div>
-                  ) : (
-                    filteredSmartFilterTags.map((tag) => (
-                      <button
-                        key={tag.id}
-                        onClick={() => handleSmartFilterBulkTag(tag.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          width: '100%',
-                          padding: '8px',
-                          fontSize: '12px',
-                          color: 'var(--text-primary)',
-                          background: 'transparent',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                      >
-                        <span
-                          style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            background: tag.color || 'var(--text-quaternary)',
-                            flexShrink: 0,
-                          }}
-                        />
-                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {tag.name}
-                        </span>
-                      </button>
-                    ))
-                  )}
-                </div>
-
-                {/* Create new label section */}
-                {!isCreatingSmartFilterTag ? (
-                  <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '4px' }}>
-                    <button
-                      onClick={() => {
-                        setIsCreatingSmartFilterTag(true);
-                        setTimeout(() => newSmartFilterTagInputRef.current?.focus(), 10);
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        width: '100%',
-                        padding: '8px',
-                        fontSize: '12px',
-                        fontWeight: 500,
-                        color: 'var(--accent-primary)',
-                        background: 'transparent',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <PlusIcon size={12} />
-                      Create new label
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '8px' }}>
-                    <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '8px' }}>
-                      NEW LABEL
-                    </div>
-                    <input
-                      ref={newSmartFilterTagInputRef}
-                      type="text"
-                      placeholder="Label name"
-                      value={newSmartFilterTagName}
-                      onChange={(e) => setNewSmartFilterTagName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && newSmartFilterTagName.trim()) {
-                          createSmartFilterTag(newSmartFilterTagName);
-                        } else if (e.key === 'Escape') {
-                          setIsCreatingSmartFilterTag(false);
-                          setNewSmartFilterTagName('');
-                        }
-                      }}
-                      style={{
-                        width: '100%',
-                        padding: '6px 8px',
-                        fontSize: '12px',
-                        color: 'var(--text-primary)',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: '4px',
-                        outline: 'none',
-                        marginBottom: '8px',
-                      }}
-                    />
-                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                      <button
-                        onClick={() => {
-                          setIsCreatingSmartFilterTag(false);
-                          setNewSmartFilterTagName('');
-                        }}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '11px',
-                          color: 'var(--text-tertiary)',
-                          background: 'transparent',
-                          border: '1px solid var(--border-default)',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => newSmartFilterTagName.trim() && createSmartFilterTag(newSmartFilterTagName)}
-                        disabled={!newSmartFilterTagName.trim()}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '11px',
-                          fontWeight: 500,
-                          color: newSmartFilterTagName.trim() ? 'white' : 'var(--text-quaternary)',
-                          background: newSmartFilterTagName.trim() ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: newSmartFilterTagName.trim() ? 'pointer' : 'not-allowed',
-                        }}
-                      >
-                        Create
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Active Filters Summary */}
-      {!smartFilterDescription && (selectedTagIds.length > 0 || lastActiveFilter !== 'all') && (
-        <div style={{
-          padding: '8px 24px',
-          borderBottom: '1px solid var(--border-subtle)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          background: 'var(--bg-secondary)',
-        }}>
-          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-            Filtered:
-          </span>
-          {selectedTagIds.map(tagId => {
-            const tag = availableTags.find(t => t.id === tagId);
-            if (!tag) return null;
-            return (
-              <span
-                key={tagId}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  padding: '2px 8px',
-                  fontSize: '11px',
-                  fontWeight: 500,
-                  color: tag.color || 'var(--text-secondary)',
-                  background: tag.color ? `${tag.color}15` : 'var(--bg-tertiary)',
-                  borderRadius: '4px',
-                }}
-              >
-                <span style={{
-                  width: '6px',
-                  height: '6px',
-                  borderRadius: '50%',
-                  background: tag.color || 'var(--text-quaternary)',
-                }} />
-                {tag.name}
-                <button
-                  onClick={() => toggleTagFilter(tagId)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    marginLeft: '2px',
-                    cursor: 'pointer',
-                    color: 'inherit',
-                    opacity: 0.6,
-                  }}
-                >
-                  <CloseIcon size={10} />
-                </button>
-              </span>
-            );
-          })}
-          {lastActiveFilter !== 'all' && (
-            <span style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              padding: '2px 8px',
-              fontSize: '11px',
-              fontWeight: 500,
-              color: 'var(--text-secondary)',
-              background: 'var(--bg-tertiary)',
-              borderRadius: '4px',
-            }}>
-              <ClockIcon size={10} />
-              {LAST_ACTIVE_FILTERS.find(f => f.key === lastActiveFilter)?.label}
-              <button
-                onClick={() => setLastActiveFilter('all')}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  padding: 0,
-                  marginLeft: '2px',
-                  cursor: 'pointer',
-                  color: 'inherit',
-                  opacity: 0.6,
-                }}
-              >
-                <CloseIcon size={10} />
-              </button>
-            </span>
-          )}
-          <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
-            {sorted.length} result{sorted.length !== 1 ? 's' : ''}
-          </span>
         </div>
       )}
 
@@ -1749,16 +1251,10 @@ export default function ContactsTable({
         <div style={{ flex: 1, overflow: 'auto' }}>
           {/* WORLD-CLASS UX: Only show skeleton on true initial load (no data ever loaded) */}
           {isLoading && contacts.length === 0 ? (
-            <LoadingState isMobile={true} />
+            <MobileLoadingState />
           ) : sorted.length === 0 ? (
             <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-              {/* Show searching state if search is active and server search pending */}
-              {isSearching ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                  <InlineSpinner />
-                  <span>Searching...</span>
-                </div>
-              ) : search || selectedTagIds.length > 0 || lastActiveFilter !== 'all' || smartFilterDescription ? (
+              {search || activeTagFilters.length > 0 || !lastActiveFilters.includes('all') || typeFilter !== 'all' ? (
                 'No contacts match your filters'
               ) : (
                 'No contacts yet'
@@ -1800,7 +1296,38 @@ export default function ContactsTable({
         </div>
       ) : (
         /* Desktop Table View */
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+          {/* Filtering overlay - Linear style */}
+          {isFiltering && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'var(--bg-primary)',
+                opacity: 0.6,
+                zIndex: 20,
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'center',
+                paddingTop: '100px',
+                pointerEvents: 'none',
+              }}
+            >
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 16px',
+                background: 'var(--bg-secondary)',
+                borderRadius: '8px',
+                border: '1px solid var(--border-subtle)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              }}>
+                <InlineSpinner size={16} />
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Filtering...</span>
+              </div>
+            </div>
+          )}
           <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
             <thead>
               <tr style={{
@@ -1810,58 +1337,69 @@ export default function ContactsTable({
                 borderBottom: '1px solid var(--border-subtle)',
                 zIndex: 10,
               }}>
-                {/* Checkbox column */}
-                <th style={{ ...thStyle, width: '40px', paddingLeft: '12px' }}>
-                  <button
-                    onClick={toggleSelectAll}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: '16px',
-                      height: '16px',
-                      padding: 0,
-                      background: selectedContactIds.size === sorted.length && sorted.length > 0
-                        ? 'var(--accent-primary)'
-                        : selectedContactIds.size > 0
-                          ? 'var(--bg-tertiary)'
-                          : 'transparent',
-                      border: selectedContactIds.size === sorted.length && sorted.length > 0
-                        ? 'none'
-                        : '1px solid var(--border-default)',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {selectedContactIds.size === sorted.length && sorted.length > 0 && (
-                      <CheckIcon size={10} color="white" />
-                    )}
-                    {selectedContactIds.size > 0 && selectedContactIds.size < sorted.length && (
-                      <MinusIcon size={10} />
-                    )}
-                  </button>
-                </th>
+                {/* Checkbox column - only show when no filters active */}
+                {!hasActiveFilters && (
+                  <th style={{ ...thStyle, width: '40px', paddingLeft: '12px' }}>
+                    <button
+                      onClick={toggleSelectAll}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '16px',
+                        height: '16px',
+                        padding: 0,
+                        background: selectedContactIds.size === sorted.length && sorted.length > 0
+                          ? 'var(--accent-primary)'
+                          : selectedContactIds.size > 0
+                            ? 'var(--bg-tertiary)'
+                            : 'transparent',
+                        border: selectedContactIds.size === sorted.length && sorted.length > 0
+                          ? 'none'
+                          : '1px solid var(--border-default)',
+                        borderRadius: '3px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {selectedContactIds.size === sorted.length && sorted.length > 0 && (
+                        <CheckIcon size={10} color="white" />
+                      )}
+                      {selectedContactIds.size > 0 && selectedContactIds.size < sorted.length && (
+                        <MinusIcon size={10} />
+                      )}
+                    </button>
+                  </th>
+                )}
 
                 {/* Name column */}
-                <th style={{ ...thStyle, width: typeFilter === 'all' ? '22%' : '27%' }}>
+                <th style={{
+                  ...thStyle,
+                  width: showAiColumns ? '200px' : (typeFilter === 'all' ? '25%' : '30%'),
+                  minWidth: '150px',
+                  paddingLeft: hasActiveFilters ? '24px' : '16px'
+                }}>
                   <button onClick={() => handleSort('name')} style={thButtonStyle}>
                     Name
                     <SortIcon active={sortKey === 'name'} direction={sortDirection} />
                   </button>
                 </th>
 
-                {/* Type column - only when showing all types */}
-                {typeFilter === 'all' && (
-                  <th style={{ ...thStyle, width: '80px' }}>
+                {/* Type column - show for Partner view (has mix of private/group) OR when no AI columns */}
+                {(typeFilter === 'all' && !showAiColumns) || (showAiColumns && activeTagFilters.length === 1 && availableTags.find(t => t.id === activeTagFilters[0])?.name === 'Partner') ? (
+                  <th style={{ ...thStyle, width: '70px' }}>
                     <button onClick={() => handleSort('type')} style={thButtonStyle}>
                       Type
                       <SortIcon active={sortKey === 'type'} direction={sortDirection} />
                     </button>
                   </th>
-                )}
+                ) : null}
 
-                {/* Username */}
-                <th style={{ ...thStyle, width: '120px' }}>Username</th>
+                {/* Username - hide when AI columns are shown (groups don't have usernames) */}
+                {!showAiColumns && (
+                  <th style={{ ...thStyle, width: '120px' }}>
+                    <span style={{ display: 'flex', alignItems: 'center' }}>Username</span>
+                  </th>
+                )}
 
                 {/* Phone - only for People */}
                 {showPhoneColumn && (
@@ -1883,19 +1421,30 @@ export default function ContactsTable({
                   </th>
                 )}
 
-                {/* Tags column - always visible */}
-                <th style={{ ...thStyle, width: '150px' }}>Tags</th>
-
-                {/* Messages - fixed width */}
-                <th style={{ ...thStyle, width: '90px' }}>
-                  <button onClick={() => handleSort('totalMessages')} style={thButtonStyle}>
-                    Messages
-                    <SortIcon active={sortKey === 'totalMessages'} direction={sortDirection} />
-                  </button>
+                {/* Tags column - tighter in AI view */}
+                <th style={{ ...thStyle, width: showAiColumns ? '120px' : '150px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center' }}>Tags</span>
                 </th>
 
-                {/* Last Active - fixed width */}
-                <th style={{ ...thStyle, width: '100px' }}>
+                {/* AI Action/Status column - "Action" for Customers/Groups, "Status" for Partners */}
+                {showAiColumns && (
+                  <th style={{ ...thStyle, width: '120px' }}>
+                    <button onClick={() => handleSort('aiStatus')} style={thButtonStyle}>
+                      {activeTagFilters.length === 1 && availableTags.find(t => t.id === activeTagFilters[0])?.name === 'Partner' ? 'Status' : 'Action'}
+                      <SortIcon active={sortKey === 'aiStatus'} direction={sortDirection} />
+                    </button>
+                  </th>
+                )}
+
+                {/* AI Summary column - wider for readability */}
+                {showAiColumns && (
+                  <th style={{ ...thStyle, width: '320px' }}>
+                    <span style={{ display: 'flex', alignItems: 'center' }}>Summary</span>
+                  </th>
+                )}
+
+                {/* Last Active */}
+                <th style={{ ...thStyle, width: showAiColumns ? '90px' : '100px' }}>
                   <button onClick={() => handleSort('lastInteraction')} style={thButtonStyle}>
                     Last Active
                     <SortIcon active={sortKey === 'lastInteraction'} direction={sortDirection} />
@@ -1907,55 +1456,54 @@ export default function ContactsTable({
               </tr>
             </thead>
             <tbody>
-              {/* WORLD-CLASS UX: Only show skeleton on true initial load (no data ever loaded) */}
+              {/* Show skeleton rows during initial load */}
               {isLoading && contacts.length === 0 ? (
-                <tr>
-                  <td colSpan={10} style={{ padding: 0 }}>
-                    <LoadingState isMobile={false} />
-                  </td>
-                </tr>
+                [...Array(8)].map((_, i) => (
+                  <SkeletonTableRow
+                    key={i}
+                    showCheckbox={!hasActiveFilters}
+                    showTypeColumn={typeFilter === 'all'}
+                    showPhoneColumn={showPhoneColumn}
+                    showMembersColumn={showMembersColumn}
+                    showAiColumns={showAiColumns}
+                  />
+                ))
               ) : sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={10} style={{ padding: '48px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                    {/* Show searching state if search is active and server search pending */}
-                    {isSearching ? (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                        <InlineSpinner />
-                        <span>Searching...</span>
-                      </div>
-                    ) : search || selectedTagIds.length > 0 || lastActiveFilter !== 'all' || smartFilterDescription ? (
-                      'No contacts match your filters'
-                    ) : (
-                      'No contacts yet'
-                    )}
+                  <td
+                    colSpan={showAiColumns ? 9 : 8}
+                    style={{ padding: '16px', textAlign: 'center', color: 'var(--text-tertiary)' }}
+                  >
+                    No contacts found
                   </td>
                 </tr>
               ) : (
-                <>
-                  {sorted.map((contact) => (
-                    <ContactRow
-                      key={contact.id}
-                      contact={contact}
-                      onClick={() => onSelect(contact)}
-                      typeFilter={typeFilter}
-                      showPhoneColumn={showPhoneColumn}
-                      showMembersColumn={showMembersColumn}
-                      availableTags={availableTags}
-                      onTagsChange={onTagsChange}
-                      isSelected={selectedContactIds.has(contact.id)}
-                      onToggleSelect={() => toggleSelectContact(contact.id)}
-                    />
-                  ))}
-                </>
+                sorted.map((contact) => (
+                  <ContactRow
+                    key={contact.id}
+                    contact={contact}
+                    onClick={() => onSelect(contact)}
+                    typeFilter={typeFilter}
+                    showPhoneColumn={showPhoneColumn}
+                    showMembersColumn={showMembersColumn}
+                    showAiColumns={showAiColumns}
+                    availableTags={availableTags}
+                    onTagsChange={onTagsChange}
+                    isSelected={selectedContactIds.has(contact.id)}
+                    onToggleSelect={() => toggleSelectContact(contact.id)}
+                    showCheckbox={!hasActiveFilters}
+                    isPartnerView={activeTagFilters.length === 1 && availableTags.find(t => t.id === activeTagFilters[0])?.name === 'Partner'}
+                  />
+                ))
               )}
             </tbody>
           </table>
-          {/* 100x RELIABLE: Fixed height container for loading indicator to prevent layout shift */}
-          {/* Always render the container, just show/hide content for zero layout shift */}
+
+          {/* Fixed-height load more container to avoid layout shift */}
           <div
             ref={loadMoreTriggerRef}
             style={{
-              height: '48px', // Fixed height - always same regardless of loading state
+              height: '48px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1968,7 +1516,6 @@ export default function ContactsTable({
                 <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading more contacts...</span>
               </div>
             ) : hasMore ? (
-              // Invisible trigger element - same height, just transparent
               <span style={{ fontSize: '12px', color: 'transparent' }}>Loading more...</span>
             ) : null}
           </div>
@@ -2020,15 +1567,25 @@ function InlineSpinner({ size = 16 }: { size?: number }) {
 
 function SkeletonPulse({ style }: { style?: React.CSSProperties }) {
   return (
-    <div
-      style={{
-        background: 'linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%)',
-        backgroundSize: '200% 100%',
-        animation: 'shimmer 1.5s infinite',
-        borderRadius: '4px',
-        ...style,
-      }}
-    />
+    <>
+      <style>
+        {`
+          @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+          }
+        `}
+      </style>
+      <div
+        style={{
+          background: 'linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%)',
+          backgroundSize: '200% 100%',
+          animation: 'shimmer 1.5s infinite',
+          borderRadius: '4px',
+          ...style,
+        }}
+      />
+    </>
   );
 }
 
@@ -2058,56 +1615,99 @@ function MobileSkeletonRow() {
   );
 }
 
-function DesktopSkeletonRow() {
+// Skeleton row that matches actual table column structure (no layout shift)
+function SkeletonTableRow({
+  showCheckbox,
+  showTypeColumn,
+  showPhoneColumn,
+  showMembersColumn,
+  showAiColumns = false,
+}: {
+  showCheckbox: boolean;
+  showTypeColumn: boolean;
+  showPhoneColumn: boolean;
+  showMembersColumn: boolean;
+  showAiColumns?: boolean;
+}) {
   return (
-    <tr>
-      {/* Checkbox column */}
-      <td style={{ padding: '12px 8px 12px 12px', width: '40px' }}>
-        <SkeletonPulse style={{ width: '16px', height: '16px', borderRadius: '3px' }} />
-      </td>
+    <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+      {/* Checkbox column - conditional */}
+      {showCheckbox && (
+        <td style={{ ...tdStyle, width: '40px', paddingLeft: '12px' }}>
+          <SkeletonPulse style={{ width: '16px', height: '16px', borderRadius: '3px' }} />
+        </td>
+      )}
 
       {/* Name column */}
-      <td style={{ padding: '12px 16px' }}>
+      <td style={{ ...tdStyle, paddingLeft: showCheckbox ? '16px' : '24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <SkeletonPulse style={{ width: '32px', height: '32px', borderRadius: '50%', flexShrink: 0 }} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <SkeletonPulse style={{ width: '120px', height: '13px' }} />
-            <SkeletonPulse style={{ width: '80px', height: '11px' }} />
-          </div>
+          <SkeletonPulse style={{ width: '120px', height: '14px' }} />
         </div>
       </td>
 
-      {/* Type column */}
-      <td style={{ padding: '12px 16px' }}>
-        <SkeletonPulse style={{ width: '60px', height: '13px' }} />
+      {/* Type column - hide when AI columns shown */}
+      {showTypeColumn && !showAiColumns && (
+        <td style={tdStyle}>
+          <SkeletonPulse style={{ width: '50px', height: '20px', borderRadius: '4px' }} />
+        </td>
+      )}
+
+      {/* Username column - hide when AI columns shown */}
+      {!showAiColumns && (
+        <td style={tdStyle}>
+          <SkeletonPulse style={{ width: '80px', height: '14px' }} />
+        </td>
+      )}
+
+      {/* Phone column - conditional */}
+      {showPhoneColumn && (
+        <td style={tdStyle}>
+          <SkeletonPulse style={{ width: '90px', height: '14px' }} />
+        </td>
+      )}
+
+      {/* Members column - conditional */}
+      {showMembersColumn && (
+        <td style={tdStyle}>
+          <SkeletonPulse style={{ width: '40px', height: '14px' }} />
+        </td>
+      )}
+
+      {/* Tags column - always visible */}
+      <td style={tdStyle}>
+        <SkeletonPulse style={{ width: '70px', height: '20px', borderRadius: '4px' }} />
       </td>
 
-      {/* Tags column */}
-      <td style={{ padding: '12px 16px' }}>
-        <SkeletonPulse style={{ width: '80px', height: '22px', borderRadius: '4px' }} />
-      </td>
+      {/* AI Action column */}
+      {showAiColumns && (
+        <td style={{ ...tdStyle, width: '110px' }}>
+          <SkeletonPulse style={{ width: '80px', height: '16px' }} />
+        </td>
+      )}
 
-      {/* Phone column */}
-      <td style={{ padding: '12px 16px' }}>
-        <SkeletonPulse style={{ width: '100px', height: '13px' }} />
-      </td>
-
-      {/* Messages column */}
-      <td style={{ padding: '12px 16px' }}>
-        <SkeletonPulse style={{ width: '40px', height: '13px' }} />
-      </td>
+      {/* AI Summary column - wider */}
+      {showAiColumns && (
+        <td style={{ ...tdStyle, width: '320px' }}>
+          <SkeletonPulse style={{ width: '240px', height: '14px' }} />
+        </td>
+      )}
 
       {/* Last Active column */}
-      <td style={{ padding: '12px 16px' }}>
-        <SkeletonPulse style={{ width: '60px', height: '13px' }} />
+      <td style={tdStyle}>
+        <SkeletonPulse style={{ width: '55px', height: '14px' }} />
       </td>
+
+      {/* Chevron column */}
+      <td style={{ ...tdStyle, width: '36px' }}></td>
     </tr>
   );
 }
 
-function LoadingState({ isMobile }: { isMobile: boolean }) {
+// Mobile loading state only (desktop uses SkeletonTableRow directly in table)
+function MobileLoadingState() {
   return (
-    <div style={{ padding: '24px', textAlign: 'center' }}>
+    <div>
       <style>
         {`
           @keyframes shimmer {
@@ -2116,30 +1716,9 @@ function LoadingState({ isMobile }: { isMobile: boolean }) {
           }
         `}
       </style>
-
-      {isMobile ? (
-        <div>
-          {[...Array(6)].map((_, i) => (
-            <MobileSkeletonRow key={i} />
-          ))}
-        </div>
-      ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-          <tbody>
-            {[...Array(8)].map((_, i) => (
-              <DesktopSkeletonRow key={i} />
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <p style={{
-        marginTop: '16px',
-        color: 'var(--text-tertiary)',
-        fontSize: '13px',
-      }}>
-        Loading contacts...
-      </p>
+      {[...Array(6)].map((_, i) => (
+        <MobileSkeletonRow key={i} />
+      ))}
     </div>
   );
 }
@@ -2359,13 +1938,16 @@ interface ContactRowProps {
   typeFilter: 'all' | 'people' | 'groups' | 'channels';
   showPhoneColumn: boolean;
   showMembersColumn: boolean;
+  showAiColumns: boolean;
   availableTags: Tag[];
   onTagsChange?: (contactId: string, tags: { id: string; name: string; color: string | null }[]) => void;
   isSelected: boolean;
   onToggleSelect: () => void;
+  showCheckbox: boolean;
+  isPartnerView?: boolean; // True when viewing Partner tab - shows Status column instead of Action
 }
 
-function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembersColumn, availableTags, onTagsChange, isSelected, onToggleSelect }: ContactRowProps) {
+function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembersColumn, showAiColumns, availableTags, onTagsChange, isSelected, onToggleSelect, showCheckbox, isPartnerView = false }: ContactRowProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false);
@@ -2471,32 +2053,34 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
         transition: 'background 100ms ease',
       }}
     >
-      {/* Checkbox */}
-      <td style={{ ...tdStyle, width: '40px', paddingLeft: '12px' }}>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSelect();
-          }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '16px',
-            height: '16px',
-            padding: 0,
-            background: isSelected ? 'var(--accent-primary)' : 'transparent',
-            border: isSelected ? 'none' : '1px solid var(--border-default)',
-            borderRadius: '3px',
-            cursor: 'pointer',
-          }}
-        >
-          {isSelected && <CheckIcon size={10} color="white" />}
-        </button>
-      </td>
+      {/* Checkbox - only show when no filters active */}
+      {showCheckbox && (
+        <td style={{ ...tdStyle, width: '40px', paddingLeft: '12px' }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect();
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '16px',
+              height: '16px',
+              padding: 0,
+              background: isSelected ? 'var(--accent-primary)' : 'transparent',
+              border: isSelected ? 'none' : '1px solid var(--border-default)',
+              borderRadius: '3px',
+              cursor: 'pointer',
+            }}
+          >
+            {isSelected && <CheckIcon size={10} color="white" />}
+          </button>
+        </td>
+      )}
 
       {/* Name */}
-      <td style={tdStyle}>
+      <td style={{ ...tdStyle, paddingLeft: showCheckbox ? '16px' : '24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           {/* Avatar */}
           <div className="relative flex-shrink-0">
@@ -2568,8 +2152,8 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
         </div>
       </td>
 
-      {/* Type - only when showing all types */}
-      {typeFilter === 'all' && (
+      {/* Type - show for Partner view (has mix of private/group) OR when no AI columns */}
+      {((typeFilter === 'all' && !showAiColumns) || (showAiColumns && isPartnerView)) && (
         <td style={tdStyle}>
           <span style={{
             fontSize: '11px',
@@ -2583,16 +2167,18 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
         </td>
       )}
 
-      {/* Username */}
-      <td style={tdStyle}>
-        {contact.username ? (
-          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            @{contact.username}
-          </span>
-        ) : (
-          <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
-        )}
-      </td>
+      {/* Username - hide when AI columns are shown (groups don't have usernames) */}
+      {!showAiColumns && (
+        <td style={tdStyle}>
+          {contact.username ? (
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              @{contact.username}
+            </span>
+          ) : (
+            <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
+          )}
+        </td>
+      )}
 
       {/* Phone - only for People */}
       {showPhoneColumn && (
@@ -2620,10 +2206,57 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
         </td>
       )}
 
-      {/* Tags column with inline assignment */}
+      {/* Tags column - always visible */}
       <td style={tdStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {contact.tags && contact.tags.length > 0 ? (
+        {showAiColumns ? (
+          /* AI view: Simple read-only tag display */
+          <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+            {contact.tags && contact.tags.length > 0 ? (
+              <>
+                {contact.tags.slice(0, 2).map((tag) => (
+                  <span
+                    key={tag.id}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '2px 6px',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      color: tag.color || 'var(--text-tertiary)',
+                      background: tag.color ? `${tag.color}15` : 'var(--bg-tertiary)',
+                      borderRadius: '4px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <span style={{
+                      width: '5px',
+                      height: '5px',
+                      borderRadius: '50%',
+                      background: tag.color || 'var(--text-quaternary)',
+                      flexShrink: 0,
+                    }} />
+                    {tag.name}
+                  </span>
+                ))}
+                {contact.tags.length > 2 && (
+                  <span style={{
+                    fontSize: '11px',
+                    color: 'var(--text-quaternary)',
+                    padding: '2px 4px',
+                  }}>
+                    +{contact.tags.length - 2}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
+            )}
+          </div>
+        ) : (
+          /* Normal view: Tags with inline assignment */
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            {contact.tags && contact.tags.length > 0 ? (
             <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', flex: 1 }}>
               {contact.tags.slice(0, 2).map((tag) => (
                 <span
@@ -2959,23 +2592,222 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
             </div>
           )}
 
-          {/* Show dash only if no tags and no dropdown */}
-          {(!contact.tags || contact.tags.length === 0) && (!onTagsChange || availableTags.length === 0) && (
-            <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
-          )}
-        </div>
+            {/* Show dash only if no tags and no dropdown */}
+            {(!contact.tags || contact.tags.length === 0) && (!onTagsChange || availableTags.length === 0) && (
+              <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
+            )}
+          </div>
+        )}
       </td>
 
-      {/* Messages */}
-      <td style={tdStyle}>
-        <span style={{
-          fontSize: '12px',
-          color: 'var(--text-secondary)',
-          fontVariantNumeric: 'tabular-nums',
-        }}>
-          {contact.totalMessages.toLocaleString()}
-        </span>
-      </td>
+      {/* AI Action - Linear design system urgency badge */}
+      {showAiColumns && (
+        <td style={{ ...tdStyle, width: '110px' }}>
+          {(() => {
+            // Smart urgency calculation - uses AI data when available, falls back to lastInteraction
+            const daysInactive = getEffectiveDaysInactive({
+              aiStatusReason: contact.aiStatusReason,
+              lastInteraction: contact.lastInteraction,
+              aiStatus: contact.aiStatus,
+            });
+
+            // Use AI's actual recommendations when available
+            const urgencyLevel = getUrgencyLevelFromAI(contact.aiUrgencyLevel, contact.aiAction, contact.aiStatus, daysInactive);
+            const urgencyColor = getUrgencyColor(contact.aiStatus, daysInactive);
+            const urgencyBg = getUrgencyBgColor(contact.aiStatus, daysInactive);
+            const statusLabel = getStatusLabel(contact.aiStatus);
+            // CRITICAL FIX: Use AI's actual action recommendation instead of hardcoded logic
+            const actionLabel = getActionLabelFromAI(contact.aiAction, contact.aiStatus, daysInactive);
+            const cleanSummary = getCleanSummary(contact.aiStatusReason);
+
+
+            // Show days badge when inactive 3+ days OR when AI flagged as waiting
+            const showDaysBadge = daysInactive >= 3 ||
+              (contact.aiStatus === 'needs_owner') ||
+              (contact.aiStatus === 'at_risk' && daysInactive > 0);
+
+            if (contact.aiAnalyzing) {
+              // Analyzing state - skeleton that matches badge shape
+              return (
+                <div
+                  className="ai-shimmer"
+                  style={{
+                    width: '80px',
+                    height: '24px',
+                    borderRadius: '6px',
+                    background: 'linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%)',
+                    backgroundSize: '200% 100%',
+                  }}
+                />
+              );
+            }
+
+            if (!contact.aiStatus) {
+              // No AI status - show neutral state
+              return (
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  background: 'rgba(107, 114, 128, 0.08)',
+                  fontSize: '11px',
+                  fontWeight: 500,
+                  color: '#6B7280',
+                }}>
+                  <span style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: '#6B7280',
+                    flexShrink: 0,
+                  }} />
+                  Review
+                </span>
+              );
+            }
+
+            // Build tooltip content - Different for Partner vs Customer/Groups
+            const hasSuggestedAction = contact.aiSuggestedAction;
+            const hasContent = hasSuggestedAction || cleanSummary;
+
+            // PARTNER VIEW: Show Status in badge, Action only in tooltip (concise)
+            // CUSTOMER/GROUPS VIEW: Show Action in badge, Summary in tooltip (original behavior)
+            const tooltipContent = isPartnerView ? (
+              // Partner tooltip - shows Next Step only (concise, no "why")
+              <div style={{ maxWidth: '260px' }}>
+                {hasSuggestedAction ? (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 600, color: '#3B82F6', marginBottom: '2px', textTransform: 'uppercase' }}>
+                      Next Step
+                    </div>
+                    <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1.35 }}>
+                      {contact.aiSuggestedAction}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>No suggested action yet</div>
+                )}
+              </div>
+            ) : (
+              // Customer/Groups tooltip - shows Next Action
+              <div style={{ maxWidth: '280px' }}>
+                {/* Next Action */}
+                {contact.aiSuggestedAction ? (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 600, color: '#3B82F6', marginBottom: '2px', textTransform: 'uppercase' }}>
+                      Next Action
+                    </div>
+                    <div style={{
+                      fontSize: '12px',
+                      color: 'var(--text-primary)',
+                      lineHeight: 1.4,
+                    }}>
+                      {contact.aiSuggestedAction}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
+                    No suggested action yet
+                  </div>
+                )}
+              </div>
+            );
+
+            // PARTNER VIEW: Show status label (Nurturing, Active, etc.)
+            // CUSTOMER/GROUPS VIEW: Show action label (Escalate, Follow up, etc.) - original behavior
+            const displayLabel = isPartnerView ? statusLabel : actionLabel;
+
+            // Render the badge with tooltip
+            return (
+              <Tooltip content={tooltipContent} position="top" maxWidth={340}>
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  background: urgencyBg,
+                  cursor: 'help',
+                  transition: 'background 150ms ease',
+                  position: 'relative',
+                }}>
+                  {/* Status dot */}
+                  <span style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: urgencyColor,
+                    flexShrink: 0,
+                    boxShadow: urgencyLevel === 'critical' || urgencyLevel === 'high'
+                      ? `0 0 6px ${urgencyColor}40`
+                      : 'none',
+                  }} />
+
+                  {/* Label - Status for Partners, Action for Customers/Groups */}
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    color: urgencyColor,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {displayLabel}
+                  </span>
+
+                  {/* Days badge - visible indicator of urgency (for Customer/Groups only) */}
+                  {!isPartnerView && showDaysBadge && daysInactive > 0 && (
+                    <span style={{
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      color: urgencyLevel === 'critical' || urgencyLevel === 'high' ? '#fff' : urgencyColor,
+                      background: urgencyLevel === 'critical' || urgencyLevel === 'high'
+                        ? urgencyColor
+                        : `${urgencyColor}18`,
+                      padding: '1px 5px',
+                      borderRadius: '4px',
+                      marginLeft: '1px',
+                    }}>
+                      {daysInactive}d
+                    </span>
+                  )}
+                </span>
+              </Tooltip>
+            );
+          })()}
+        </td>
+      )}
+
+      {/* AI Summary - wider for readability */}
+      {showAiColumns && (
+        <td style={{ ...tdStyle, width: '320px' }}>
+          {contact.aiAnalyzing ? (
+            // Analyzing state - show shimmer placeholder
+            <div className="ai-shimmer" style={{
+              height: '32px',
+              borderRadius: '4px',
+              background: 'linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%)',
+              backgroundSize: '200% 100%',
+            }} />
+          ) : contact.aiSummary ? (
+            // Done - show summary
+            <span style={{
+              fontSize: '12px',
+              color: 'var(--text-primary)',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              lineHeight: '1.4',
+            }}>
+              {contact.aiSummary}
+            </span>
+          ) : (
+            <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
+          )}
+        </td>
+      )}
 
       {/* Last Active - shows "Online" if online, otherwise relative time */}
       <td style={tdStyle}>
@@ -3000,13 +2832,12 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
 // Styles
 // ============================================
 
+// Linear-style consistent spacing
 const thStyle: React.CSSProperties = {
-  padding: '10px 16px',
-  fontSize: '11px',
-  fontWeight: 600,
+  padding: '10px 12px',
+  fontSize: '12px',
+  fontWeight: 500,
   color: 'var(--text-tertiary)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.5px',
   textAlign: 'left',
 };
 
@@ -3023,7 +2854,7 @@ const thButtonStyle: React.CSSProperties = {
 };
 
 const tdStyle: React.CSSProperties = {
-  padding: '10px 16px',
+  padding: '10px 12px',
 };
 
 // ============================================

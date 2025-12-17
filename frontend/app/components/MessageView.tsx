@@ -1049,18 +1049,17 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
         </div>
       )}
 
-      {/* Input area */}
+      {/* Input area - Linear minimal style */}
       <div
         style={{
           display: 'flex',
           alignItems: 'flex-end',
-          gap: 'var(--space-3)',
-          background: 'var(--bg-tertiary)',
-          border: `1px solid ${isFocused ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-          borderRadius: 'var(--radius-lg)',
-          padding: 'var(--space-2) var(--space-3)',
-          transition: 'border-color 150ms ease, box-shadow 150ms ease',
-          boxShadow: isFocused ? '0 0 0 2px var(--accent-subtle)' : 'none',
+          gap: '8px',
+          background: 'var(--bg-secondary)',
+          border: `1px solid ${isFocused ? 'var(--border-default)' : 'var(--border-subtle)'}`,
+          borderRadius: '8px',
+          padding: '8px 12px',
+          transition: 'border-color 150ms ease',
         }}
       >
         <input
@@ -1070,9 +1069,28 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
           style={{ display: 'none' }}
           accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar"
         />
-        <IconButton title="Attach File" onClick={handleAttachClick}>
-          <AttachmentIcon style={{ width: '18px', height: '18px' }} />
-        </IconButton>
+
+        {/* Attach button - minimal */}
+        <button
+          title="Attach file"
+          onClick={handleAttachClick}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '4px',
+            background: 'transparent',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            color: 'var(--text-quaternary)',
+            transition: 'color 100ms ease',
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
+          onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-quaternary)'}
+        >
+          <AttachmentIcon style={{ width: '16px', height: '16px' }} />
+        </button>
 
         <textarea
           ref={textareaRef}
@@ -1102,7 +1120,7 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
           }}
           onFocus={() => setIsFocused(true)}
           onBlur={handleMentionBlur}
-          placeholder={attachedFile ? "Add a caption..." : isGroup ? "Type a message... (@ to mention)" : "Type a message..."}
+          placeholder={attachedFile ? "Add a caption..." : isGroup ? "Message... (@ to mention)" : "Message..."}
           rows={1}
           style={{
             flex: 1,
@@ -1110,12 +1128,13 @@ function MessageInputWrapper({ textareaRef, inputValue, onInputChange, onKeyDown
             border: 'none',
             outline: 'none',
             fontFamily: 'var(--font-sans)',
-            fontSize: 'var(--text-md)',
+            fontSize: '13px',
             color: 'var(--text-primary)',
             resize: 'none',
-            minHeight: '24px',
-            maxHeight: '120px',
-            lineHeight: '1.5',
+            minHeight: '20px',
+            maxHeight: '100px',
+            lineHeight: '1.4',
+            padding: '2px 0',
           }}
           className="placeholder:text-[var(--text-quaternary)]"
         />
@@ -1133,38 +1152,41 @@ interface SendButtonProps {
 }
 
 function SendButton({ onClick, disabled, loading }: SendButtonProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
   return (
     <button
       onClick={onClick}
       disabled={disabled || loading}
-      title={loading ? "Uploading..." : "Send Message"}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      title={loading ? "Uploading..." : "Send message (Enter)"}
       style={{
-        width: '36px',
-        height: '36px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        padding: '6px',
         border: 'none',
-        borderRadius: 'var(--radius-md)',
+        borderRadius: '6px',
         cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
-        transition: 'all 150ms ease',
-        background: (disabled || loading)
-          ? 'var(--bg-hover)'
-          : isHovered
-          ? 'var(--accent-hover)'
-          : 'var(--accent-primary)',
-        color: (disabled || loading) ? 'var(--text-quaternary)' : 'white',
+        transition: 'all 100ms ease',
+        background: (disabled || loading) ? 'transparent' : 'var(--bg-tertiary)',
+        color: (disabled || loading) ? 'var(--text-quaternary)' : 'var(--text-secondary)',
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled && !loading) {
+          e.currentTarget.style.background = 'var(--accent-primary)';
+          e.currentTarget.style.color = 'white';
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!disabled && !loading) {
+          e.currentTarget.style.background = 'var(--bg-tertiary)';
+          e.currentTarget.style.color = 'var(--text-secondary)';
+        }
       }}
     >
       {loading ? (
         <div
           style={{
-            width: '16px',
-            height: '16px',
+            width: '14px',
+            height: '14px',
             border: '2px solid currentColor',
             borderTopColor: 'transparent',
             borderRadius: '50%',
@@ -1172,7 +1194,7 @@ function SendButton({ onClick, disabled, loading }: SendButtonProps) {
           }}
         />
       ) : (
-        <SendIcon style={{ width: '18px', height: '18px' }} />
+        <SendIcon style={{ width: '16px', height: '16px' }} />
       )}
     </button>
   );
@@ -1256,6 +1278,8 @@ interface MediaItemProps {
   item: {
     type: string;
     url: string;
+    downloadUrl?: string;
+    fallbackUrl?: string;
     name?: string;
     mimeType?: string;
     size?: number;
@@ -1270,9 +1294,10 @@ function MediaItem({ item, isSent, hasText, index }: MediaItemProps) {
   const [imageLoading, setImageLoading] = useState(true);
   const [imageError, setImageError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [currentUrl, setCurrentUrl] = useState(item.url);
 
   // Determine if this is an image that should be displayed inline
-  const isBase64Image = item.url?.startsWith('data:image/');
+  const isBase64Image = currentUrl?.startsWith('data:image/');
   const isImage = isBase64Image || item.type === 'photos' || item.type === 'photo' ||
                   (item.mimeType && item.mimeType.startsWith('image/'));
   const isVideo = item.type === 'video' || item.type === 'videos' ||
@@ -1282,6 +1307,15 @@ function MediaItem({ item, isSent, hasText, index }: MediaItemProps) {
 
   // Retry handler - retry up to 2 times on error
   const handleError = () => {
+    // Fallback to alternate URL if available
+    if (item.fallbackUrl && currentUrl !== item.fallbackUrl) {
+      setCurrentUrl(item.fallbackUrl);
+      setImageError(false);
+      setImageLoading(true);
+      setRetryCount(0);
+      return;
+    }
+
     if (retryCount < 2) {
       setRetryCount(prev => prev + 1);
       setImageLoading(true);
@@ -1293,7 +1327,7 @@ function MediaItem({ item, isSent, hasText, index }: MediaItemProps) {
   };
 
   // Add retry query param to force reload
-  const imageUrl = retryCount > 0 ? `${item.url}&retry=${retryCount}` : item.url;
+  const imageUrl = retryCount > 0 ? `${currentUrl}${currentUrl.includes('?') ? '&' : '?'}retry=${retryCount}` : currentUrl;
 
   if (isImage && !imageError) {
     return (
@@ -1445,9 +1479,10 @@ interface MessageBubbleProps {
   isHighlighted?: boolean;
   onReact?: (messageId: string, emoji: string, action: 'add' | 'remove') => void;
   onRef?: (el: HTMLDivElement | null) => void;
+  compact?: boolean; // For smaller font size in modal view
 }
 
-function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: MessageBubbleProps) {
+function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef, compact = false }: MessageBubbleProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [pickerHovered, setPickerHovered] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1599,18 +1634,18 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
       {/* Mini avatar for group messages (Telegram/WhatsApp style) */}
       {hasSender && (
         <div style={{
-          width: '28px',
-          height: '28px',
+          width: compact ? '24px' : '28px',
+          height: compact ? '24px' : '28px',
           borderRadius: 'var(--radius-full)',
           background: getSenderColor(message.sender!.id),
           color: 'white',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: '10px',
+          fontSize: compact ? '9px' : '10px',
           fontWeight: 'var(--font-semibold)',
           flexShrink: 0,
-          marginTop: '2px',
+          marginTop: compact ? '1px' : '2px',
         }}>
           {getSenderInitials(message.sender!.name)}
         </div>
@@ -1674,14 +1709,14 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
 
         <div style={{
           // Tighter padding: Linear-style minimal spacing
-          padding: hasMedia ? '0' : (isShortMessage ? '6px 10px' : '8px 12px'),
-          borderRadius: 'var(--radius-lg)',
-          fontSize: 'var(--text-md)',
-          lineHeight: '1.4',
+          padding: hasMedia ? '0' : (isShortMessage ? (compact ? '4px 8px' : '6px 10px') : (compact ? '6px 10px' : '8px 12px')),
+          borderRadius: compact ? 'var(--radius-md)' : 'var(--radius-lg)',
+          fontSize: compact ? '13px' : 'var(--text-md)',
+          lineHeight: compact ? '1.35' : '1.4',
           background: isSent ? 'var(--accent-primary)' : 'var(--bg-secondary)',
           color: isSent ? 'white' : 'var(--text-primary)',
-          borderBottomRightRadius: isSent ? 'var(--radius-sm)' : 'var(--radius-lg)',
-          borderBottomLeftRadius: isSent ? 'var(--radius-lg)' : 'var(--radius-sm)',
+          borderBottomRightRadius: isSent ? 'var(--radius-sm)' : (compact ? 'var(--radius-md)' : 'var(--radius-lg)'),
+          borderBottomLeftRadius: isSent ? (compact ? 'var(--radius-md)' : 'var(--radius-lg)') : 'var(--radius-sm)',
           wordBreak: 'break-word',
           whiteSpace: 'pre-wrap',
           overflow: 'hidden',
@@ -1689,11 +1724,11 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
           {/* Sender name for group messages (compact, colored like Telegram) */}
           {hasSender && (
             <div style={{
-              fontSize: '12px',
+              fontSize: compact ? '11px' : '12px',
               fontWeight: 'var(--font-semibold)',
               color: getSenderColor(message.sender!.id),
-              marginBottom: '2px',
-              padding: hasMedia ? '8px 10px 0' : '0',
+              marginBottom: compact ? '1px' : '2px',
+              padding: hasMedia ? (compact ? '6px 8px 0' : '8px 10px 0') : '0',
             }}>
               {message.sender!.name}
             </div>
@@ -1729,7 +1764,7 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
 
         {/* Text content */}
         {text && (
-          <div style={{ padding: hasMedia ? '6px 10px 8px' : '0' }}>
+          <div style={{ padding: hasMedia ? (compact ? '4px 8px 6px' : '6px 10px 8px') : '0' }}>
             {text}
           </div>
         )}
@@ -1778,37 +1813,40 @@ function MessageBubble({ message, isGroup, isHighlighted, onReact, onRef }: Mess
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 'var(--space-1)',
-          marginTop: '2px',
+          gap: compact ? '2px' : 'var(--space-1)',
+          marginTop: compact ? '1px' : '2px',
           flexDirection: isSent ? 'row-reverse' : 'row',
         }}>
           <span style={{
-            fontSize: '11px',
+            fontSize: compact ? '10px' : '11px',
             color: 'var(--text-quaternary)',
           }}>
             {formatMessageTime(message.time)}
           </span>
-          {isSent && <MessageStatus message={message} />}
+          {isSent && <MessageStatus message={message} compact={compact} />}
         </div>
       </div>
     </div>
   );
 }
 
-function MessageStatus({ message }: { message: Message }) {
+function MessageStatus({ message, compact = false }: { message: Message; compact?: boolean }) {
+  const size = compact ? '14px' : '16px';
+  const smallSize = compact ? '12px' : '14px';
+
   if (message.readAt) {
-    return <DoubleCheckIcon style={{ width: '16px', height: '16px', color: '#34B7F1' }} />;
+    return <DoubleCheckIcon style={{ width: size, height: size, color: '#34B7F1' }} />;
   }
 
   if (message.deliveredAt) {
-    return <DoubleCheckIcon style={{ width: '16px', height: '16px', color: 'var(--text-quaternary)' }} />;
+    return <DoubleCheckIcon style={{ width: size, height: size, color: 'var(--text-quaternary)' }} />;
   }
 
   if (message.status === 'sent' || message.time) {
-    return <SingleCheckIcon style={{ width: '16px', height: '16px', color: 'var(--text-quaternary)' }} />;
+    return <SingleCheckIcon style={{ width: size, height: size, color: 'var(--text-quaternary)' }} />;
   }
 
-  return <ClockIcon style={{ width: '14px', height: '14px', color: 'var(--text-quaternary)' }} />;
+  return <ClockIcon style={{ width: smallSize, height: smallSize, color: 'var(--text-quaternary)' }} />;
 }
 
 interface MessageGroup {
@@ -1854,3 +1892,6 @@ function GroupIcon({ style }: { style?: React.CSSProperties }) {
   );
 }
 
+// Export components for reuse in CompactChatView
+export { MessageBubble, MessageInputWrapper, groupMessagesByDate, LoadingSpinner };
+export type { MessageBubbleProps, MessageInputWrapperProps, MessageGroup };

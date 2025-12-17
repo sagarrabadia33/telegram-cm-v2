@@ -1,7 +1,41 @@
 import { NextResponse } from 'next/server';
-import { readFile } from 'fs/promises';
+import { readFile, access } from 'fs/promises';
 import path from 'path';
 import { prisma } from '@/app/lib/prisma';
+
+// Helper to check if a path exists
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Get media base path - works in both local dev and production
+async function getMediaBasePath(): Promise<string> {
+  const cwd = process.cwd();
+
+  // Try multiple possible paths in order of likelihood
+  const possiblePaths = [
+    // When running from /frontend directory (typical dev)
+    path.join(cwd, '..', 'public', 'media'),
+    // When running from root project directory
+    path.join(cwd, 'public', 'media'),
+    // Absolute path fallback for local development
+    '/Users/sagarrabadia/telegram-crm-v2/public/media',
+  ];
+
+  for (const p of possiblePaths) {
+    if (await pathExists(p)) {
+      return p;
+    }
+  }
+
+  // Default fallback (original behavior)
+  return path.join(cwd, '..', 'public', 'media');
+}
 
 // Serve media files from the root project's public/media folder
 // Also handles outgoing attachments stored in FileUpload table
@@ -58,7 +92,7 @@ export async function GET(
     }
 
     // Build the actual file path - media is in root project's public folder
-    const mediaBasePath = path.join(process.cwd(), '..', 'public', 'media');
+    const mediaBasePath = await getMediaBasePath();
     const fullPath = path.join(mediaBasePath, filePath);
 
     // Read the file

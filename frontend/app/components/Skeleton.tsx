@@ -220,66 +220,39 @@ export function ContactsTableSkeleton({ count = 10 }: { count?: number }) {
   );
 }
 
-// Full page loading state with skeleton
+// Full page loading state with skeleton - matches default Contacts view
 export function PageSkeleton() {
   return (
     <div style={{
       display: 'flex',
+      flexDirection: 'column',
       height: '100vh',
       background: 'var(--bg-primary)',
       overflow: 'hidden',
     }}>
-      {/* Left panel - Conversations */}
+      {/* Filter bar skeleton */}
       <div style={{
-        width: '320px',
-        borderRight: '1px solid var(--border-subtle)',
         display: 'flex',
-        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 16px',
+        borderBottom: '1px solid var(--border-subtle)',
+        background: 'var(--bg-secondary)',
       }}>
-        {/* Header */}
-        <div style={{ padding: '16px', borderBottom: '1px solid var(--border-subtle)' }}>
-          <Skeleton width={100} height={20} style={{ marginBottom: '12px' }} />
-          <Skeleton width="100%" height={36} borderRadius="8px" />
-        </div>
-        {/* List */}
-        <ConversationsListSkeleton count={10} />
+        {/* Tag filter buttons */}
+        <Skeleton width={120} height={28} borderRadius="6px" />
+        <Skeleton width={100} height={28} borderRadius="6px" />
+        <Skeleton width={80} height={28} borderRadius="6px" />
+        <div style={{ flex: 1 }} />
+        {/* Search */}
+        <Skeleton width={200} height={32} borderRadius="6px" />
+        {/* Export button */}
+        <Skeleton width={80} height={32} borderRadius="6px" />
       </div>
 
-      {/* Middle panel - Messages */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {/* Header */}
-        <div style={{
-          padding: '16px',
-          borderBottom: '1px solid var(--border-subtle)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-        }}>
-          <Skeleton width={40} height={40} borderRadius="50%" />
-          <div>
-            <Skeleton width={150} height={16} style={{ marginBottom: '4px' }} />
-            <Skeleton width={80} height={12} />
-          </div>
-        </div>
-        {/* Messages */}
-        <div style={{ flex: 1, padding: '16px' }}>
-          <MessagesListSkeleton count={8} />
-        </div>
-        {/* Input */}
-        <div style={{ padding: '16px', borderTop: '1px solid var(--border-subtle)' }}>
-          <Skeleton width="100%" height={44} borderRadius="22px" />
-        </div>
-      </div>
-
-      {/* Right panel - AI Assistant */}
-      <div style={{
-        width: '360px',
-        borderLeft: '1px solid var(--border-subtle)',
-        padding: '16px',
-      }}>
-        <Skeleton width={120} height={20} style={{ marginBottom: '16px' }} />
-        <Skeleton width="100%" height={100} borderRadius="8px" style={{ marginBottom: '12px' }} />
-        <Skeleton width="100%" height={60} borderRadius="8px" />
+      {/* Table skeleton */}
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <ContactsTableSkeleton count={12} />
       </div>
     </div>
   );

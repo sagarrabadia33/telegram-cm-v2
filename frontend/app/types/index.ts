@@ -42,7 +42,16 @@ export interface Message {
   readAt: string | null;
   status: string | null;
   contentType: string;
-  media?: { type: string; url: string; name?: string; mimeType?: string }[] | null;
+  media?: {
+    type: string;
+    url: string;
+    downloadUrl?: string;
+    fallbackUrl?: string;
+    name?: string;
+    mimeType?: string;
+    size?: number;
+    thumbnail?: string;
+  }[] | null;
   sender?: {
     id: string;
     name: string;

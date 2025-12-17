@@ -242,6 +242,25 @@ body {
   30% { transform: translateY(-4px); opacity: 1; }
 }
 
+/* AI Analysis Shimmer Animation */
+@keyframes aiShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes aiPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.9); }
+}
+
+.ai-shimmer {
+  animation: aiShimmer 1.5s infinite ease-in-out;
+}
+
+.ai-analyzing-dot {
+  animation: aiPulse 1s infinite ease-in-out;
+}
+
 /* ============================================
  * LINEAR-STYLE TOOLTIP & DROPDOWN ANIMATIONS
  * ============================================ */

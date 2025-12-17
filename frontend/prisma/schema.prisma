@@ -54,8 +54,26 @@ model Tag {
   updatedAt     DateTime          @updatedAt
   contacts      ContactTag[]
   conversations ConversationTag[]
+  suggestions   TagSuggestion[]
+  toneProfile   ToneProfile?      // Tag-specific tone profile for draft replies
+
+  // AI CONVERSATION INTELLIGENCE (per-tag configuration)
+  aiEnabled           Boolean   @default(false)      // Enable AI analysis for this tag
+  aiSystemPrompt      String?   @db.Text             // Custom system prompt for AI analysis
+  aiTeamMembers       String[]                       // Team member names/usernames (e.g., ["Jesus", "Prathamesh"])
+  aiOwnerNames        String[]                       // Owner names that trigger escalation (e.g., ["Shalin"])
+  aiAnalysisInterval  Int       @default(5)          // Minutes between AI analysis runs
+  aiLastAnalyzedAt    DateTime?                      // When AI last ran for this tag's conversations
+
+  // MODULAR TAG-SPECIFIC AI CONFIGURATION
+  aiStatusOptions     Json?                          // Array of valid statuses for this tag (e.g., ["nurturing", "active", "dormant"])
+  aiStatusLabels      Json?                          // Display labels for statuses (e.g., {"nurturing": "Nurturing", "active": "Active"})
+  aiStatusColors      Json?                          // Badge colors for statuses (e.g., {"nurturing": "blue", "active": "green"})
+  aiColumnConfig      Json?                          // Column configuration for list view (e.g., ["type", "status", "action", "summary"])
+  aiSignalDefinitions Json?                          // Custom signals to detect (e.g., {"positive": [...], "warning": [...], "opportunity": [...]})
 
   @@index([category])
+  @@index([aiEnabled])
 }
 
 model ContactTag {
@@ -136,6 +154,40 @@ model Conversation {
   metadata            Json?
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
+
+  // Group triage preference (user-configurable)
+  triagePreference    String?           // 'auto_clear' | 'auto_review' | 'smart' (default)
+
+  // AI CONVERSATION INTELLIGENCE (tag-based analysis results)
+  aiStatus              String?           // AI-determined status (tag-specific options)
+  aiStatusReason        String?           // Brief explanation of why this status
+  aiStatusUpdatedAt     DateTime?         // When AI last updated the status
+
+  // MANUAL STATUS OVERRIDE (user can override AI status)
+  manualStatus          String?           // User-set status (takes precedence over aiStatus)
+  manualStatusSetAt     DateTime?         // When user set the manual status
+  aiStatusRecommendation String?          // AI's suggestion if status should change (shown as recommendation)
+  aiStatusRecommendationReason String?    // Why AI recommends this change
+  aiSummary             String?   @db.Text // 1-2 sentence summary of recent conversation
+  aiSummaryUpdatedAt    DateTime?         // When summary was last generated
+  aiChurnRisk           String?           // 'high' | 'medium' | 'low' | null
+  aiChurnSignals        Json?             // Array of detected churn signals
+  aiSuggestedAction     String?           // Recommended next action (detailed)
+  aiAction              String?           // AI's action recommendation: 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor'
+  aiLastAnalyzedMsgId   String?           // Track which message was last analyzed
+  aiAnalyzing           Boolean   @default(false) // True when AI analysis is in progress
+  aiAnalyzingStartedAt  DateTime?         // When analysis started (for timeout detection)
+
+  // WORLD-CLASS INTELLIGENCE FIELDS (computed during analysis)
+  aiHealthScore         Int?              // Relationship health 0-100
+  aiHealthFactors       Json?             // { responsiveness, sentiment, engagement, resolution } each 0-25
+  aiLifecycleStage      String?           // 'onboarding' | 'active' | 'at_risk' | 'dormant' | 'churning'
+  aiUrgencyLevel        String?           // 'critical' | 'high' | 'medium' | 'low'
+  aiSentiment           String?           // 'positive' | 'negative' | 'neutral' | 'mixed'
+  aiSentimentTrajectory String?           // 'improving' | 'stable' | 'deteriorating' | 'unknown'
+  aiFrustrationSignals  Json?             // Array of detected frustration phrases
+  aiCriticalInsights    Json?             // Array of top critical insights
+
   contact             Contact?          @relation(fields: [contactId], references: [id])
   tags                ConversationTag[]
   followUps           FollowUp[]
@@ -145,6 +197,11 @@ model Conversation {
   outgoingMessages    OutgoingMessage[]
   outgoingReactions   OutgoingReaction[]
   telegramChat        TelegramChat?
+
+  // Inbox Zero relations
+  triage              MessageTriage?
+  commitments         Commitment[]
+  tagSuggestions      TagSuggestion[]
 
   @@unique([source, externalChatId])
   @@index([contactId])
@@ -650,4 +707,132 @@ model DailyMetrics {
   @@unique([date, userId])
   @@index([date])
   @@index([userId])
+}
+
+// =============================================================================
+// INBOX ZERO TABLES
+// =============================================================================
+
+// Message Triage - AI classification for inbox zero
+model MessageTriage {
+  id                String    @id @default(cuid())
+  conversationId    String    @unique
+
+  // Classification
+  bucket            String    // 'respond' | 'review' | 'clear'
+  confidence        Float     @default(0.0)
+  reason            String?
+  priorityScore     Int       @default(5) // 1-10, higher = more urgent (tag-aware)
+
+  // RESPOND signals
+  isDirectMention   Boolean   @default(false)
+  isQuestion        Boolean   @default(false)
+  hasOverduePromise Boolean   @default(false)
+  isComplaint       Boolean   @default(false)
+
+  // Conversation state tracking (for accurate triage)
+  conversationState String?   // 'waiting_on_them' | 'waiting_on_you' | 'concluded' | 'ongoing'
+  suggestedAction   String?   // 'reply' | 'follow_up' | 'wait' | 'close'
+
+  // AI draft reply (tag-aware)
+  draftReply        String?
+  draftTone         String?   @default("casual")
+
+  // User action
+  status            String    @default("pending") // 'pending' | 'actioned' | 'snoozed' | 'dismissed'
+  snoozeUntil       DateTime?
+  actionedAt        DateTime?
+
+  // Timestamps
+  lastMessageId     String?   // Track which message triggered this
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([bucket])
+  @@index([status])
+  @@index([priorityScore(sort: Desc)])
+  @@index([createdAt])
+}
+
+// Commitment tracking - promises extracted from messages
+model Commitment {
+  id                String    @id @default(cuid())
+  conversationId    String
+
+  content           String    // What was promised
+  extractedFrom     String?   // Original quote
+  dueDate           DateTime?
+  direction         String    // 'outbound' (user promised) | 'inbound' (they promised)
+
+  status            String    @default("pending") // 'pending' | 'completed' | 'cancelled'
+  completedAt       DateTime?
+
+  confidence        Float?
+  isManual          Boolean   @default(false)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([status])
+  @@index([dueDate])
+  @@index([direction])
+}
+
+// Tag suggestions with high confidence
+model TagSuggestion {
+  id                String    @id @default(cuid())
+  conversationId    String
+  tagId             String
+
+  reason            String
+  confidence        Float
+  signalType        String?   // 'buying_signal' | 'relationship' | 'intent'
+
+  status            String    @default("pending") // 'pending' | 'accepted' | 'rejected'
+
+  createdAt         DateTime  @default(now())
+
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tag               Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, tagId])
+  @@index([status])
+  @@index([confidence])
+}
+
+// =============================================================================
+// TONE PROFILE (for AI draft replies matching user's writing style)
+// =============================================================================
+
+// Stores analyzed writing patterns for generating tone-matched draft replies
+model ToneProfile {
+  id                String    @id @default(cuid())
+  tagId             String?   @unique // null = global profile, non-null = tag-specific
+
+  // Writing patterns extracted from message history
+  greetingPatterns  Json?     // ["Hey!", "Hi there", "Morning!"]
+  signOffPatterns   Json?     // ["Cheers", "Best", "Thanks!"]
+  emojiFrequency    Float     @default(0.0) // 0.0-1.0: percentage of messages with emojis
+  formalityLevel    Float     @default(0.5) // 0.0 = very casual, 1.0 = very formal
+  averageLength     Int       @default(50)  // Average message length in characters
+  commonPhrases     Json?     // ["let me know", "sounds good", "makes sense"]
+
+  // Analysis metadata
+  sampleCount       Int       @default(0)   // Number of messages analyzed
+  sampleMessages    Json?     // Sample messages for context in prompts
+
+  // Timestamps
+  builtAt           DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  tag               Tag?      @relation(fields: [tagId], references: [id], onDelete: SetNull)
+
+  @@index([tagId])
+  @@index([builtAt])
 }

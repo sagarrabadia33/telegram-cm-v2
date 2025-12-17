@@ -2,6 +2,48 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/app/lib/prisma';
 
 /**
+ * Trigger AI re-analysis for a conversation in the background
+ * This is a fire-and-forget function - errors are silently ignored
+ */
+async function triggerAIReanalysis(conversationId: string): Promise<void> {
+  try {
+    // Get the conversation to find its AI-enabled tag
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: {
+        tags: {
+          select: {
+            tag: {
+              select: { id: true, aiEnabled: true }
+            }
+          }
+        }
+      }
+    });
+
+    // Find the first AI-enabled tag
+    const aiEnabledTag = conversation?.tags.find(t => t.tag.aiEnabled);
+    if (!aiEnabledTag) return; // No AI-enabled tag, skip
+
+    // Call the analyze API internally (non-blocking)
+    const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL || 'http://localhost:3000';
+    fetch(`${baseUrl}/api/ai/analyze-conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tagId: aiEnabledTag.tag.id,
+        conversationIds: [conversationId],
+        forceRefresh: true,
+      }),
+    }).catch(() => {
+      // Silently ignore - will be picked up in next batch analysis
+    });
+  } catch {
+    // Silently ignore errors
+  }
+}
+
+/**
  * Notes Timeline API
  *
  * Provides CRUD operations for conversation notes with timeline support.
@@ -151,6 +193,23 @@ export async function POST(
         fileSize: fileSize || null,
         eventAt: eventAt ? new Date(eventAt) : null,
       },
+    });
+
+    // SMART TRIGGER: Mark conversation for AI re-analysis when note is added
+    // Notes are high-signal user-added context that should update AI recommendations
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        // Clear the last analyzed message ID to force re-analysis
+        // This ensures the new note context is included in the next AI analysis
+        aiLastAnalyzedMsgId: null,
+      },
+    });
+
+    // Optionally trigger immediate re-analysis in background (non-blocking)
+    // This is fire-and-forget - we don't wait for it
+    triggerAIReanalysis(conversationId).catch(() => {
+      // Silently ignore errors - analysis will happen on next batch
     });
 
     return NextResponse.json({

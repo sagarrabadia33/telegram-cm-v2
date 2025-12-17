@@ -42,7 +42,7 @@ class AnalyticsClient {
   private flushTimer: NodeJS.Timeout | null = null;
   private isEnabled: boolean = true;
   private isProductionEnv: boolean = false;
-  private currentViewMode: 'messages' | 'contacts' = 'messages';
+  private currentViewMode: 'home' | 'messages' | 'contacts' = 'home';
 
   // Session tracking
   private sessionStartTime: number;
@@ -136,7 +136,7 @@ class AnalyticsClient {
   }
 
   // Update current view mode for context
-  setViewMode(viewMode: 'messages' | 'contacts'): void {
+  setViewMode(viewMode: 'home' | 'messages' | 'contacts'): void {
     // Track time on previous page before switching
     if (viewMode !== this.currentViewMode) {
       this.trackPageTime();
@@ -245,6 +245,6 @@ export function track<T extends EventType>(
 }
 
 // Convenience function for setting view mode
-export function setViewMode(viewMode: 'messages' | 'contacts'): void {
+export function setViewMode(viewMode: 'home' | 'messages' | 'contacts'): void {
   analytics?.setViewMode(viewMode);
 }

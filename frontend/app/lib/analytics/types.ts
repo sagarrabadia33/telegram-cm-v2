@@ -60,7 +60,9 @@ export type NoteEvent =
 
 export type FilterEvent =
   | 'quick_filter_applied'
-  | 'quick_filter_cleared';
+  | 'quick_filter_cleared'
+  | 'contact_tags_filtered'
+  | 'contact_last_active_filtered';
 
 export type EventType =
   | NavigationEvent
@@ -80,7 +82,7 @@ export interface EventProperties {
   panel_resized: { panel: string; oldWidth: number; newWidth: number };
   session_started: { userAgent?: string };
   session_ended: { durationMs: number };
-  page_time_tracked: { page: 'messages' | 'contacts'; durationMs: number };
+  page_time_tracked: { page: 'home' | 'messages' | 'contacts'; durationMs: number };
 
   // Messaging
   conversation_opened: {
@@ -142,6 +144,8 @@ export interface EventProperties {
   // Filters
   quick_filter_applied: { filterType: string; resultCount: number };
   quick_filter_cleared: Record<string, never>;
+  contact_tags_filtered: { tagCount: number };
+  contact_last_active_filtered: { filters: string[] };
 }
 
 // Map event types to categories
@@ -196,6 +200,8 @@ export const EVENT_CATEGORIES: Record<EventType, EventCategory> = {
   // Filters
   quick_filter_applied: 'filters',
   quick_filter_cleared: 'filters',
+  contact_tags_filtered: 'filters',
+  contact_last_active_filtered: 'filters',
 };
 
 // Analytics event payload sent to server

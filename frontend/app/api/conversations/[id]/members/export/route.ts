@@ -52,15 +52,19 @@ export async function GET(
     }
 
     // Generate CSV content
-    const headers = ['Username', 'First Name', 'Last Name', 'Role', 'User ID', 'Joined At'];
-    const rows = members.map(member => [
-      member.username || '',
-      member.firstName || '',
-      member.lastName || '',
-      member.role || 'member',
-      member.externalUserId,
-      member.joinedAt ? member.joinedAt.toISOString() : '',
-    ]);
+    const headers = ['Full Name', 'Username', 'First Name', 'Last Name', 'Role', 'Telegram ID', 'Joined At'];
+    const rows = members.map(member => {
+      const fullName = [member.firstName, member.lastName].filter(Boolean).join(' ') || member.username || '';
+      return [
+        fullName,
+        member.username ? `@${member.username}` : '',
+        member.firstName || '',
+        member.lastName || '',
+        member.role || 'member',
+        member.externalUserId,
+        member.joinedAt ? member.joinedAt.toISOString().split('T')[0] : '',
+      ];
+    });
 
     // Escape CSV values
     const escapeCSV = (value: string) => {

@@ -158,7 +158,13 @@ export async function GET(request: NextRequest) {
     // This ensures conversations are ordered exactly by their most recent message
     // TELEGRAM-STYLE: Return ALL conversations so user can scroll to find any contact
     // Frontend uses virtual scrolling for performance
-    transformed.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+    // STABILITY: Add secondary sort by ID to ensure deterministic order when times are equal
+    transformed.sort((a, b) => {
+      const timeDiff = new Date(b.time).getTime() - new Date(a.time).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      // Secondary sort by ID for stability when times are equal
+      return a.id.localeCompare(b.id);
+    });
 
     return NextResponse.json(transformed);
   } catch (error) {
