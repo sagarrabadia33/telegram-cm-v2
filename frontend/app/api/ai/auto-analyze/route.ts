@@ -56,6 +56,49 @@ OUTPUT RULES:
 
 Only suggest actions when there's genuine value. Don't over-alert - Shalin trusts your judgment.`;
 
+// ============================================================================
+// TAG PRIORITY SYSTEM
+// When a conversation has multiple AI-enabled tags, pick the highest priority.
+// Priority is based on business criticality - what needs attention FIRST.
+// ============================================================================
+const TAG_PRIORITY: Record<string, number> = {
+  'Churned': 1,         // Win-back - existential, time sensitive
+  'Customer': 2,        // Shalin's direct relationships - escalations, payments
+  'Customer Groups': 3, // Team handles - operational support
+  'Partner': 4,         // BD relationships - referral pipeline
+  'Prospect': 5,        // Sales pipeline - pre-revenue
+};
+
+const DEFAULT_TAG_PRIORITY = 99;
+
+/**
+ * Select the primary tag for AI analysis from multiple tags.
+ * Uses priority system: Churned > Customer > Customer Groups > Partner > Prospect
+ */
+function selectPrimaryTag(
+  tags: Array<{ tag: { id: string; name: string; aiSystemPrompt: string | null; aiTeamMembers: string[]; aiOwnerNames: string[]; aiStatusOptions: unknown; aiStatusLabels: unknown } }>
+): { tag: { id: string; name: string; aiSystemPrompt: string | null; aiTeamMembers: string[]; aiOwnerNames: string[]; aiStatusOptions: unknown; aiStatusLabels: unknown } } | null {
+  if (tags.length === 0) return null;
+
+  // Filter to tags with AI prompts first, then sort by priority
+  const tagsWithPrompts = tags.filter(t => t.tag.aiSystemPrompt);
+
+  if (tagsWithPrompts.length > 0) {
+    return tagsWithPrompts.sort((a, b) => {
+      const priorityA = TAG_PRIORITY[a.tag.name] ?? DEFAULT_TAG_PRIORITY;
+      const priorityB = TAG_PRIORITY[b.tag.name] ?? DEFAULT_TAG_PRIORITY;
+      return priorityA - priorityB;
+    })[0];
+  }
+
+  // Fallback: sort all tags by priority
+  return tags.sort((a, b) => {
+    const priorityA = TAG_PRIORITY[a.tag.name] ?? DEFAULT_TAG_PRIORITY;
+    const priorityB = TAG_PRIORITY[b.tag.name] ?? DEFAULT_TAG_PRIORITY;
+    return priorityA - priorityB;
+  })[0];
+}
+
 // Tag configuration type
 interface TagConfig {
   id: string;
@@ -315,16 +358,22 @@ async function analyzeConversation(conversationId: string): Promise<AIAnalysisRe
     return null;
   }
 
-  // Get tag configuration (find first tag with AI prompt, or use defaults)
-  const tagWithConfig = conv.tags.find(t => t.tag.aiSystemPrompt)?.tag;
-  const tagConfig: TagConfig | null = tagWithConfig ? {
-    id: tagWithConfig.id,
-    name: tagWithConfig.name,
-    aiSystemPrompt: tagWithConfig.aiSystemPrompt,
-    aiTeamMembers: tagWithConfig.aiTeamMembers,
-    aiOwnerNames: tagWithConfig.aiOwnerNames,
-    aiStatusOptions: tagWithConfig.aiStatusOptions as string[] | null,
-    aiStatusLabels: tagWithConfig.aiStatusLabels as Record<string, string> | null,
+  // ====================================================================
+  // TAG PRIORITY SELECTION
+  // When conversation has multiple AI-enabled tags, use priority system:
+  // Churned > Customer > Customer Groups > Partner > Prospect
+  // ====================================================================
+  const primaryTagWrapper = selectPrimaryTag(conv.tags);
+  const primaryTag = primaryTagWrapper?.tag;
+
+  const tagConfig: TagConfig | null = primaryTag ? {
+    id: primaryTag.id,
+    name: primaryTag.name,
+    aiSystemPrompt: primaryTag.aiSystemPrompt,
+    aiTeamMembers: primaryTag.aiTeamMembers,
+    aiOwnerNames: primaryTag.aiOwnerNames,
+    aiStatusOptions: primaryTag.aiStatusOptions as string[] | null,
+    aiStatusLabels: primaryTag.aiStatusLabels as Record<string, string> | null,
   } : null;
 
   const systemPrompt = tagConfig?.aiSystemPrompt || DEFAULT_CUSTOMER_GROUPS_PROMPT;

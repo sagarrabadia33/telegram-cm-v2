@@ -70,6 +70,9 @@ export interface Contact {
   aiSentimentTrajectory: 'improving' | 'stable' | 'deteriorating' | 'unknown' | null;
   aiFrustrationSignals: string[] | null;
   aiCriticalInsights: string[] | null;
+  // TAG PRIORITY: Which tag was used for AI analysis (for transparency)
+  aiAnalyzedTagId: string | null;
+  aiAnalyzedTagName: string | null;
 }
 
 // All available tags for filtering (includes counts from API)
@@ -2672,6 +2675,20 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
             const hasSuggestedAction = contact.aiSuggestedAction;
             const hasContent = hasSuggestedAction || cleanSummary;
 
+            // Show "Analyzed as: X" when conversation has multiple tags (transparency)
+            const hasMultipleTags = contact.tags.length > 1;
+            const analyzedAsInfo = hasMultipleTags && contact.aiAnalyzedTagName ? (
+              <div style={{
+                fontSize: '10px',
+                color: 'var(--text-quaternary)',
+                marginTop: '6px',
+                paddingTop: '6px',
+                borderTop: '1px solid var(--border-subtle)',
+              }}>
+                Analyzed as: <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>{contact.aiAnalyzedTagName}</span>
+              </div>
+            ) : null;
+
             // PARTNER VIEW: Show Status in badge, Action only in tooltip (concise)
             // CUSTOMER/GROUPS VIEW: Show Action in badge, Summary in tooltip (original behavior)
             const tooltipContent = isPartnerView ? (
@@ -2689,6 +2706,7 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
                 ) : (
                   <div style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>No suggested action yet</div>
                 )}
+                {analyzedAsInfo}
               </div>
             ) : (
               // Customer/Groups tooltip - shows Next Action
@@ -2712,6 +2730,7 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
                     No suggested action yet
                   </div>
                 )}
+                {analyzedAsInfo}
               </div>
             );
 

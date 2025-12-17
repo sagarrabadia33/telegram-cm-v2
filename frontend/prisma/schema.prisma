@@ -177,6 +177,8 @@ model Conversation {
   aiLastAnalyzedMsgId   String?           // Track which message was last analyzed
   aiAnalyzing           Boolean   @default(false) // True when AI analysis is in progress
   aiAnalyzingStartedAt  DateTime?         // When analysis started (for timeout detection)
+  aiAnalyzedTagId       String?           // Which tag was used for analysis (for multi-tag transparency)
+  aiAnalyzedTagName     String?           // Tag name for UI display (e.g., "Churned", "Customer Groups")
 
   // WORLD-CLASS INTELLIGENCE FIELDS (computed during analysis)
   aiHealthScore         Int?              // Relationship health 0-100

@@ -242,6 +242,9 @@ export async function GET(request: NextRequest) {
         aiSentimentTrajectory: true,
         aiFrustrationSignals: true,
         aiCriticalInsights: true,
+        // Tag priority transparency
+        aiAnalyzedTagId: true,
+        aiAnalyzedTagName: true,
         contact: {
           select: {
             id: true,
@@ -435,6 +438,9 @@ export async function GET(request: NextRequest) {
         aiSentimentTrajectory: conv.aiSentimentTrajectory || null,
         aiFrustrationSignals: conv.aiFrustrationSignals as string[] | null,
         aiCriticalInsights: conv.aiCriticalInsights as string[] | null,
+        // Tag priority transparency
+        aiAnalyzedTagId: conv.aiAnalyzedTagId || null,
+        aiAnalyzedTagName: conv.aiAnalyzedTagName || null,
       };
     });
 

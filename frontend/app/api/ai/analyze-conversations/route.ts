@@ -10,6 +10,54 @@ const anthropic = new Anthropic({
 const BEAST_BOT_ID = '7262004897';
 const BEAST_BOT_USERNAME = 'BeastInsightsBOT';
 
+// ============================================================================
+// TAG PRIORITY SYSTEM
+// When a conversation has multiple AI-enabled tags, pick the highest priority.
+// Priority is based on business criticality - what needs attention FIRST.
+// ============================================================================
+const TAG_PRIORITY: Record<string, number> = {
+  'Churned': 1,         // Win-back - existential, time sensitive
+  'Customer': 2,        // Shalin's direct relationships - escalations, payments
+  'Customer Groups': 3, // Team handles - operational support
+  'Partner': 4,         // BD relationships - referral pipeline
+  'Prospect': 5,        // Sales pipeline - pre-revenue
+};
+
+// Default priority for unknown tags (lowest)
+const DEFAULT_TAG_PRIORITY = 99;
+
+/**
+ * Select the primary tag for AI analysis from multiple tags.
+ * Uses priority system: Churned > Customer > Customer Groups > Partner > Prospect
+ * Returns the tag with highest priority (lowest number).
+ */
+function selectPrimaryTag(
+  tags: Array<{ tag: { id: string; name: string; aiEnabled: boolean; aiSystemPrompt: string | null; aiTeamMembers: string[]; aiOwnerNames: string[] } }>
+): { tag: { id: string; name: string; aiEnabled: boolean; aiSystemPrompt: string | null; aiTeamMembers: string[]; aiOwnerNames: string[] } } | null {
+  // Filter to only AI-enabled tags with prompts
+  const aiEnabledTags = tags.filter(t => t.tag.aiEnabled && t.tag.aiSystemPrompt);
+
+  if (aiEnabledTags.length === 0) {
+    // Fallback: any AI-enabled tag even without custom prompt
+    const anyAiTag = tags.filter(t => t.tag.aiEnabled);
+    if (anyAiTag.length === 0) return null;
+
+    // Sort by priority
+    return anyAiTag.sort((a, b) => {
+      const priorityA = TAG_PRIORITY[a.tag.name] ?? DEFAULT_TAG_PRIORITY;
+      const priorityB = TAG_PRIORITY[b.tag.name] ?? DEFAULT_TAG_PRIORITY;
+      return priorityA - priorityB;
+    })[0];
+  }
+
+  // Sort by priority (lower number = higher priority)
+  return aiEnabledTags.sort((a, b) => {
+    const priorityA = TAG_PRIORITY[a.tag.name] ?? DEFAULT_TAG_PRIORITY;
+    const priorityB = TAG_PRIORITY[b.tag.name] ?? DEFAULT_TAG_PRIORITY;
+    return priorityA - priorityB;
+  })[0];
+}
+
 // Team member identifiers
 const TEAM_MEMBERS = {
   shalin: { names: ['Shalin', 'Shalin R'], usernames: ['shalin_r'], role: 'CEO/Owner' },
@@ -1395,6 +1443,7 @@ export async function POST(request: NextRequest) {
               select: {
                 id: true,
                 name: true,
+                aiEnabled: true,
                 aiSystemPrompt: true,
                 aiTeamMembers: true,
                 aiOwnerNames: true,
@@ -1493,22 +1542,29 @@ export async function POST(request: NextRequest) {
           privateChatContext = await fetchPrivateChatContext(conv.members, conv.title || 'Unknown');
         }
 
-        // Get tag config for system prompt - user has FULL CONTROL
-        const tagConfig = conv.tags.find(t => t.tag.aiSystemPrompt)?.tag || tag;
-        const ownerNames = (tagConfig?.aiOwnerNames as string[]) || [];
-        const teamMembers = (tagConfig?.aiTeamMembers as string[]) || [];
+        // ====================================================================
+        // TAG PRIORITY SELECTION
+        // When conversation has multiple AI-enabled tags, use priority system:
+        // Churned > Customer > Customer Groups > Partner > Prospect
+        // ====================================================================
+        const primaryTagWrapper = selectPrimaryTag(conv.tags);
+        const primaryTag = primaryTagWrapper?.tag || tag;
+        const primaryTagName = primaryTag?.name || 'Unknown';
 
-        // Build system prompt - uses custom prompt if set, otherwise default template
-        // USER HAS FULL CONTROL - their prompt REPLACES the default, not appends to it
+        // Get config from the PRIMARY tag (highest priority)
+        const ownerNames = (primaryTag?.aiOwnerNames as string[]) || [];
+        const teamMembers = (primaryTag?.aiTeamMembers as string[]) || [];
+
+        // Build system prompt from PRIMARY tag
         const systemPrompt = buildSystemPrompt(
-          tagConfig?.aiSystemPrompt || null,
+          primaryTag?.aiSystemPrompt || null,
           ownerNames,
           teamMembers
         );
 
-        // REQUIRED OUTPUT FORMAT - Tag-aware to support both Customer and Partner
-        // Detect if this is a Partner conversation
-        const isPartnerConversation = conv.tags.some(t => t.tag.name === 'Partner');
+        // Determine output format based on PRIMARY tag type
+        // Partner tag gets Partner-specific format, all others get Customer format
+        const isPartnerConversation = primaryTagName === 'Partner';
 
         const OUTPUT_FORMAT = isPartnerConversation
           ? `OUTPUT FORMAT (strict JSON - MUST include all these fields):
@@ -1603,6 +1659,10 @@ Return ONLY valid JSON. No markdown, no explanation.`;
             aiAction: dbFields.aiAction, // Store AI's raw action recommendation
             aiLastAnalyzedMsgId: lastMsgId,
             aiAnalyzing: false,
+
+            // TAG PRIORITY: Store which tag was used for analysis (for transparency)
+            aiAnalyzedTagId: primaryTag?.id || null,
+            aiAnalyzedTagName: primaryTagName !== 'Unknown' ? primaryTagName : null,
 
             // WORLD-CLASS INTELLIGENCE FIELDS (pre-computed, 100% reliable)
             aiHealthScore: intelligence.healthScore,
