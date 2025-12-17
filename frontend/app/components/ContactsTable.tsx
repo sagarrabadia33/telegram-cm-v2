@@ -262,7 +262,7 @@ function getUrgencyBgColor(status: AiStatus | null, daysInactive: number): strin
 function getStatusLabel(status: AiStatus | null): string {
   if (!status) return 'Review';
 
-  // Status label mapping (supports both Customer and Partner statuses)
+  // Status label mapping (supports Customer, Partner, and Churned statuses)
   const statusLabels: Record<string, string> = {
     // Customer statuses
     needs_owner: 'Needs Owner',
@@ -276,6 +276,12 @@ function getStatusLabel(status: AiStatus | null): string {
     active: 'Active',
     dormant: 'Dormant',
     committed: 'Committed',
+    // Churned statuses (win-back focused)
+    winnable: 'Winnable',
+    long_shot: 'Long Shot',
+    lost: 'Lost',
+    re_engaged: 'Re-engaged',
+    won_back: 'Won Back',
   };
 
   return statusLabels[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -286,7 +292,15 @@ function getStatusLabel(status: AiStatus | null): string {
 // PRIORITY: Use AI's actual action recommendation when available
 // ============================================================================
 
-type AiAction = 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | 'Send Intro' | 'Follow Up' | 'Nurture' | null;
+// AI Action types - includes Customer, Partner, and Churned actions
+type AiAction =
+  // Customer/Customer Groups actions
+  | 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor'
+  // Partner actions
+  | 'Send Intro' | 'Follow Up' | 'Nurture'
+  // Churned win-back actions
+  | 'Win Back Call' | 'Send Offer' | 'Personal Outreach' | 'Final Attempt' | 'Close File' | 'Celebrate Win'
+  | null;
 
 // Get action label from AI's recommendation (preferred) or fallback to status-based
 function getActionLabelFromAI(aiAction: AiAction, status: AiStatus | null, daysInactive: number): string {
@@ -323,6 +337,17 @@ function getActionLabelFromAI(aiAction: AiAction, status: AiStatus | null, daysI
       return 'Re-engage';
     case 'committed':
       return 'Support';
+    // Churned statuses
+    case 'winnable':
+      return 'Win Back Call';
+    case 'long_shot':
+      return 'Final Attempt';
+    case 'lost':
+      return 'Close File';
+    case 're_engaged':
+      return 'Send Offer';
+    case 'won_back':
+      return 'Celebrate Win';
     default:
       return 'Review';
   }
@@ -349,19 +374,29 @@ function getUrgencyLevelFromAI(
   // PRIORITY 2: Derive urgency from AI action
   if (aiAction) {
     switch (aiAction) {
+      // Critical urgency actions
       case 'Reply Now':
       case 'Escalate':
+      case 'Win Back Call':  // Churned - time sensitive win-back
         return 'critical';
+      // High urgency actions
       case 'Schedule Call':
       case 'Follow Up':
+      case 'Send Offer':     // Churned - re-engaged, strike while hot
+      case 'Personal Outreach': // Churned - needs personal touch
         return 'high';
+      // Medium urgency actions
       case 'Send Resource':
       case 'Check In':
       case 'Send Intro':
+      case 'Final Attempt':  // Churned - last try before closing
         return 'medium';
+      // Low urgency actions
       case 'On Track':
       case 'Monitor':
       case 'Nurture':
+      case 'Close File':     // Churned - no urgency, just administrative
+      case 'Celebrate Win':  // Churned - won back, no urgency
         return 'low';
     }
   }

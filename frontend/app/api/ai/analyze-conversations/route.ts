@@ -1563,11 +1563,48 @@ export async function POST(request: NextRequest) {
         );
 
         // Determine output format based on PRIMARY tag type
-        // Partner tag gets Partner-specific format, all others get Customer format
         const isPartnerConversation = primaryTagName === 'Partner';
+        const isChurnedConversation = primaryTagName === 'Churned';
 
-        const OUTPUT_FORMAT = isPartnerConversation
-          ? `OUTPUT FORMAT (strict JSON - MUST include all these fields):
+        // Tag-specific OUTPUT FORMAT
+        let OUTPUT_FORMAT: string;
+
+        if (isChurnedConversation) {
+          // CHURNED: Win-back focused analysis
+          OUTPUT_FORMAT = `OUTPUT FORMAT (strict JSON - MUST include all these fields):
+{
+  "status": "winnable" | "long_shot" | "lost" | "re_engaged" | "won_back",
+  "action": "Win Back Call" | "Send Offer" | "Personal Outreach" | "Final Attempt" | "Close File" | "Celebrate Win",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "daysSinceChurn": <number - days since they stopped paying/engaging>,
+  "churnReason": "<Why they churned: payment_failed | competitor | no_value | budget | bad_experience | unknown>",
+  "summary": "<1-2 sentences: Why they left + current win-back status. Be specific about the reason.>",
+  "nextStep": "<Specific win-back action. Be concrete and personalized.>",
+  "winBackPotential": "high" | "medium" | "low",
+  "winBackSignals": ["<positive signals that suggest they might come back>"]
+}
+
+WIN-BACK POTENTIAL ASSESSMENT:
+- high: Recent churn (<30 days), payment issue (not value issue), still engaging, mentioned they miss it
+- medium: 30-90 days churned, left for competitor but not locked in, budget issue that might resolve
+- low: 90+ days churned, explicit negative feedback, moved to competitor permanently, bad relationship
+
+URGENCY CALIBRATION (time is critical for win-back):
+- critical: Churned <14 days ago AND showing re-engagement signals OR payment failed but no cancellation
+- high: Churned 14-30 days ago OR recently responded to outreach OR asking about pricing again
+- medium: Churned 30-60 days ago OR had good relationship before leaving
+- low: Churned 60+ days ago with no recent engagement OR explicitly said "not interested"
+
+CHURN REASON DETECTION:
+- payment_failed: Payment issues mentioned, card declined, billing problems
+- competitor: Mentioned trying/using alternative, comparing to others
+- no_value: Didn't see ROI, not using the product, confusion about features
+- budget: Cost concerns, downsizing, cutting expenses
+- bad_experience: Frustration, complaints, unresolved issues
+- unknown: No clear reason detected`;
+        } else if (isPartnerConversation) {
+          // PARTNER: Relationship nurturing focused
+          OUTPUT_FORMAT = `OUTPUT FORMAT (strict JSON - MUST include all these fields):
 {
   "status": "nurturing" | "high_potential" | "active" | "committed" | "dormant",
   "action": "Reply Now" | "Schedule Call" | "Send Intro" | "Follow Up" | "Nurture" | "On Track",
@@ -1582,8 +1619,10 @@ URGENCY CALIBRATION (be aggressive for partners):
 - critical: Partner waiting 7+ days OR inbound lead waiting 3+ days OR referral opportunity slipping
 - high: Partner waiting 3-7 days OR inbound lead waiting 1-3 days OR same-day engagement needs response
 - medium: Active discussion, ball in partner's court, or follow-up needed within week
-- low: On track, no pending items, or Shalin just responded`
-          : `OUTPUT FORMAT (strict JSON - MUST include all these fields):
+- low: On track, no pending items, or Shalin just responded`;
+        } else {
+          // CUSTOMER / CUSTOMER GROUPS: Support focused
+          OUTPUT_FORMAT = `OUTPUT FORMAT (strict JSON - MUST include all these fields):
 {
   "action": "Reply Now" | "Schedule Call" | "Send Resource" | "Check In" | "Escalate" | "On Track" | "Monitor",
   "urgency": "critical" | "high" | "medium" | "low",
@@ -1594,6 +1633,7 @@ URGENCY CALIBRATION (be aggressive for partners):
   "risk": "none" | "low" | "medium" | "high",
   "riskReason": "<if risk > low, explain why with evidence from conversation>"
 }`;
+        }
 
         // Build the analysis prompt
         // Build context description for the prompt
