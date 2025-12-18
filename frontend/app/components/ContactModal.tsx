@@ -1488,14 +1488,28 @@ function getSmartSuggestions(contact: Contact): string[] {
   ];
 }
 
+// Session-based AI chat cache - persists while app is open
+// Same pattern as notesCache for instant switching between contacts
+const aiChatCache = new Map<string, ChatMessage[]>();
+
 function ContactAIChat({ contact }: { contact: Contact }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Initialize from cache if available (instant restore)
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    return aiChatCache.get(contact.id) || [];
+  });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const suggestions = getSmartSuggestions(contact);
+
+  // Persist messages to cache whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      aiChatCache.set(contact.id, messages);
+    }
+  }, [messages, contact.id]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -1707,6 +1721,40 @@ function ContactAIChat({ contact }: { contact: Contact }) {
           gap: '8px',
           alignItems: 'center',
         }}>
+          {/* New chat button - only shows when there's history */}
+          {messages.length > 0 && (
+            <button
+              onClick={() => {
+                setMessages([]);
+                aiChatCache.delete(contact.id);
+              }}
+              title="Start new chat"
+              style={{
+                padding: '10px',
+                background: 'transparent',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                color: 'var(--text-tertiary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 150ms ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-tertiary)';
+                e.currentTarget.style.color = 'var(--text-secondary)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+                e.currentTarget.style.color = 'var(--text-tertiary)';
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            </button>
+          )}
           <input
             ref={inputRef}
             type="text"
