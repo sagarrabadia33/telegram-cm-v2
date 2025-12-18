@@ -1565,11 +1565,101 @@ export async function POST(request: NextRequest) {
         // Determine output format based on PRIMARY tag type
         const isPartnerConversation = primaryTagName === 'Partner';
         const isChurnedConversation = primaryTagName === 'Churned';
+        const isProspectConversation = primaryTagName === 'Prospect';
+        const isCustomerConversation = primaryTagName === 'Customer';
 
         // Tag-specific OUTPUT FORMAT
         let OUTPUT_FORMAT: string;
 
-        if (isChurnedConversation) {
+        if (isCustomerConversation) {
+          // CUSTOMER: Executive relationship management focused (Shalin's direct 1:1 with customer owners)
+          OUTPUT_FORMAT = `OUTPUT FORMAT (strict JSON - MUST include all these fields):
+{
+  "status": "happy" | "needs_attention" | "at_risk" | "escalated" | "resolved",
+  "action": "Personal Check-in" | "Address Concern" | "Celebrate Win" | "Discuss Renewal" | "Resolve Issue" | "Strengthen Relationship" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "relationshipHealth": "strong" | "stable" | "cooling" | "at_risk",
+  "summary": "<1-2 sentences: Current relationship state, any pending issues, recent wins or concerns.>",
+  "nextStep": "<Specific action for Shalin. Be personal and relationship-focused.>",
+  "customerSentiment": "positive" | "neutral" | "frustrated" | "unknown",
+  "openIssues": ["<any unresolved concerns or requests>"],
+  "opportunities": ["<expansion, referral, or upsell opportunities mentioned>"]
+}
+
+CUSTOMER RELATIONSHIP STAGES:
+- happy: Engaged, satisfied, actively using Beast, positive sentiment
+- needs_attention: Customer raised issue or question, awaiting response from Shalin
+- at_risk: Signs of dissatisfaction, complaints, or disengagement from Shalin's perspective
+- escalated: Serious issue that Shalin is personally handling (payment, major bug, relationship repair)
+- resolved: Recent issue was addressed, relationship is stable again
+
+URGENCY CALIBRATION (Shalin's direct relationships):
+- critical: Customer waiting 5+ days for Shalin's response OR payment/billing issue OR explicit frustration
+- high: Customer raised concern 2-5 days ago OR mentioned competitor OR renewal coming up
+- medium: General check-in needed OR customer asked non-urgent question OR opportunity to strengthen
+- low: Relationship is strong, no pending items, regular healthy communication
+
+RELATIONSHIP HEALTH SIGNALS:
+- strong: Regular positive engagement, customer shares wins, refers others, enthusiastic
+- stable: Consistent communication, no issues, professional and cordial
+- cooling: Shorter responses, longer gaps between messages, less engagement
+- at_risk: Frustration signals, complaints, mentions of alternatives, payment issues
+
+OPPORTUNITIES TO DETECT:
+- Expansion: "We're growing", "more team members", "additional gateways"
+- Referral: "I know someone who...", "my friend also does...", mentions of network
+- Upsell: Questions about premium features, compliance, advanced analytics
+- Testimonial: Strong positive feedback, success stories`;
+        } else if (isProspectConversation) {
+          // PROSPECT: Demo booking and conversion focused
+          OUTPUT_FORMAT = `OUTPUT FORMAT (strict JSON - MUST include all these fields):
+{
+  "status": "new_lead" | "qualifying" | "demo_scheduled" | "demo_completed" | "negotiating" | "closed_won" | "closed_lost" | "nurturing",
+  "action": "Book Demo" | "Send Follow-up" | "Share Case Study" | "Send Proposal" | "Close Deal" | "Nurture" | "Re-engage" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "leadSource": "<How they found Beast: conference | partner_referral | inbound | cold_outreach | unknown>",
+  "summary": "<1-2 sentences: How you connected, their business (vertical/volume), where they are in the sales process.>",
+  "nextStep": "<Specific action for Shalin. Be concrete about what to do next.>",
+  "buyingSignals": ["<signals that indicate they're ready to buy>"],
+  "objections": ["<concerns or hesitations they've raised>"],
+  "dealPotential": "high" | "medium" | "low"
+}
+
+PROSPECT STAGES:
+- new_lead: Just met/connected, no demo discussed yet
+- qualifying: Understanding their needs, volume, current setup
+- demo_scheduled: Demo is booked, awaiting the call
+- demo_completed: Demo done, in decision-making process
+- negotiating: Discussing pricing, terms, or implementation
+- closed_won: They became a customer! (should be moved to Customer tag)
+- closed_lost: Declined, not a fit, or went with competitor
+- nurturing: Not ready now but worth keeping warm for future
+
+URGENCY CALIBRATION (strike while iron is hot):
+- critical: Prospect waiting 5+ days for response OR demo was yesterday/today needs follow-up OR ready to sign
+- high: Demo scheduled within 7 days OR asked about pricing OR competitor mentioned needing to decide soon
+- medium: Active conversation, qualifying stage, or demo follow-up within 2 weeks
+- low: Nurturing stage, no immediate decision timeline, or Shalin just responded
+
+DEAL POTENTIAL ASSESSMENT:
+- high: Good volume fit (100k+ transactions), clear pain point Beast solves, decision maker engaged, timeline mentioned
+- medium: Moderate volume, interested but no urgency, or need to convince stakeholders
+- low: Small volume, just exploring, or long decision timeline (6+ months)
+
+BUYING SIGNALS TO DETECT:
+- Asking about pricing, contracts, implementation timeline
+- Mentioning current pain points Beast solves (approval rates, compliance, profitability)
+- Asking technical questions about integrations
+- Requesting references or case studies
+- Mentioning competitor frustrations
+
+OBJECTION DETECTION:
+- Price concerns ("expensive", "budget", "ROI")
+- Timing ("not ready", "maybe later", "next quarter")
+- Competition ("also looking at", "comparing with")
+- Technical ("does it integrate with", "can it handle")
+- Internal ("need to check with team", "decision maker")`;
+        } else if (isChurnedConversation) {
           // CHURNED: Win-back focused analysis
           OUTPUT_FORMAT = `OUTPUT FORMAT (strict JSON - MUST include all these fields):
 {
@@ -1746,6 +1836,14 @@ Return ONLY valid JSON. No markdown, no explanation.`;
     }
 
     const duration = Date.now() - startTime;
+
+    // Update tag's aiLastAnalyzedAt timestamp
+    if (tagId) {
+      await prisma.tag.update({
+        where: { id: tagId },
+        data: { aiLastAnalyzedAt: new Date() },
+      }).catch(err => console.error('Failed to update aiLastAnalyzedAt:', err));
+    }
 
     return NextResponse.json({
       processed: results.length,

@@ -3,7 +3,7 @@
 import { useState, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Contact, Tag } from './ContactsTable';
-import NotesTimeline from './NotesTimeline';
+import NotesTimeline, { notesCache } from './NotesTimeline';
 import { MessageBubble, MessageInputWrapper, groupMessagesByDate, LoadingSpinner } from './MessageView';
 import { Message } from '../types/index';
 import { formatDate } from '../lib/utils';
@@ -124,14 +124,18 @@ function getUrgencyBgColor(status: string | null, daysInactive: number): string 
   }
 }
 
-// AI Action types (includes Customer, Partner, and Churned actions)
+// AI Action types (includes Customer, Customer Groups, Partner, Churned, and Prospect actions)
 type AiAction =
-  // Customer/Customer Groups actions
+  // Customer Groups actions (team handles)
   | 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor'
+  // Customer actions (Shalin's direct relationships)
+  | 'Personal Check-in' | 'Address Concern' | 'Discuss Renewal' | 'Resolve Issue' | 'Strengthen Relationship'
   // Partner actions
   | 'Send Intro' | 'Follow Up' | 'Nurture'
   // Churned win-back actions
   | 'Win Back Call' | 'Send Offer' | 'Personal Outreach' | 'Final Attempt' | 'Close File' | 'Celebrate Win'
+  // Prospect sales actions
+  | 'Book Demo' | 'Send Follow-up' | 'Share Case Study' | 'Send Proposal' | 'Close Deal' | 'Re-engage'
   | null;
 
 // Get action label - PRIORITY: Use AI's actual action recommendation when available
@@ -196,6 +200,40 @@ export default function ContactModal({
 
   // Notes count for badge
   const [notesCount, setNotesCount] = useState(0);
+
+  // Eagerly fetch notes count when modal opens (so badge shows immediately)
+  useEffect(() => {
+    if (!contact?.id || !isOpen) return;
+
+    // Check cache first for instant display
+    if (notesCache.has(contact.id)) {
+      const cached = notesCache.get(contact.id);
+      if (cached) {
+        setNotesCount(cached.notes.length);
+        return; // Cache hit - no need to fetch
+      }
+    }
+
+    // No cache - fetch count from API
+    const fetchNotesCount = async () => {
+      try {
+        const response = await fetch(`/api/conversations/${contact.id}/notes`);
+        const data = await response.json();
+        if (data.success) {
+          const count = data.data.notes?.length || 0;
+          setNotesCount(count);
+          // Store in cache so NotesTimeline gets it instantly when tab opens
+          notesCache.set(contact.id, {
+            notes: data.data.notes || [],
+            fetchedAt: Date.now(),
+          });
+        }
+      } catch (error) {
+        console.error('Failed to fetch notes count:', error);
+      }
+    };
+    fetchNotesCount();
+  }, [contact?.id, isOpen]);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);

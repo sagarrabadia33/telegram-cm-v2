@@ -1,6 +1,6 @@
 # Telegram CRM Frontend
 
-A Next.js 16 application providing a Telegram CRM with AI-powered conversation intelligence for Customer Groups and Partners.
+A Next.js 16 application providing a Telegram CRM with AI-powered conversation intelligence. Features a multi-tag intelligence system with specialized AI for Customer Groups, Customers, Partners, Prospects, and Churned relationships.
 
 ## Tech Stack
 
@@ -834,3 +834,177 @@ Same as Customer Groups, Partner conversations are auto-analyzed when:
   "risk": "none|low|medium|high",
   "riskReason": "Brief evidence if risk > none"
 }
+```
+
+---
+
+## Multi-Tag Intelligence System
+
+The CRM supports 5 AI-enabled tag types, each with its own specialized intelligence system. When a conversation has multiple tags, the system uses a priority hierarchy to determine which AI system analyzes it.
+
+### Tag Priority Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TAG PRIORITY SYSTEM                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Priority 1 (Highest)    ┌─────────────┐                                  │
+│   ━━━━━━━━━━━━━━━━━━━━    │   CHURNED   │  Win-back intelligence          │
+│                           └─────────────┘                                  │
+│                                  ▼                                          │
+│   Priority 2               ┌─────────────┐                                  │
+│   ━━━━━━━━━━━━━━━━━━━━    │  CUSTOMER   │  Relationship intelligence      │
+│                           └─────────────┘                                  │
+│                                  ▼                                          │
+│   Priority 3               ┌─────────────────┐                              │
+│   ━━━━━━━━━━━━━━━━━━━━    │ CUSTOMER GROUPS │  Support intelligence        │
+│                           └─────────────────┘                              │
+│                                  ▼                                          │
+│   Priority 4               ┌─────────────┐                                  │
+│   ━━━━━━━━━━━━━━━━━━━━    │   PARTNER   │  Partnership intelligence       │
+│                           └─────────────┘                                  │
+│                                  ▼                                          │
+│   Priority 5 (Lowest)     ┌─────────────┐                                  │
+│   ━━━━━━━━━━━━━━━━━━━━    │  PROSPECT   │  Sales intelligence             │
+│                           └─────────────┘                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Example**: If "Kyle" has both Customer and Churned tags, he's analyzed by the Churned intelligence system (priority 1) to maximize win-back opportunities.
+
+### Five Intelligence Systems
+
+| Tag | Priority | Mission | Key Focus |
+|-----|----------|---------|-----------|
+| **Churned** | 1 | Win back churned customers | Re-engagement opportunities, pricing sensitivity, competitor mentions |
+| **Customer** | 2 | Maintain relationships with paying customers | Satisfaction, feature usage, renewal signals |
+| **Customer Groups** | 3 | Support and success for group chats | Issue resolution, team response time, churn risk |
+| **Partner** | 4 | Nurture partner relationships | Referral potential, network value, relationship stage |
+| **Prospect** | 5 | Convert prospects to customers | Sales pipeline, buying signals, objection handling |
+
+### Tag-Specific AI Prompts
+
+Each tag has a customized system prompt stored in the database:
+
+```typescript
+// From app/api/ai/auto-analyze/route.ts
+const TAG_PRIORITY: Record<string, number> = {
+  'Churned': 1,        // Highest - win-back is most time-sensitive
+  'Customer': 2,       // Active paying customers
+  'Customer Groups': 3, // Group support
+  'Partner': 4,        // Business development
+  'Prospect': 5,       // Lowest - sales pipeline
+};
+
+function selectPrimaryTag(tagWrappers: TagWrapper[]): TagWrapper | null {
+  const aiEnabledTags = tagWrappers.filter(tw =>
+    tw.tag.aiSystemPrompt || TAG_PRIORITY[tw.tag.name]
+  );
+
+  if (aiEnabledTags.length === 0) return null;
+
+  // Sort by priority (lower number = higher priority)
+  return aiEnabledTags.sort((a, b) => {
+    const priorityA = TAG_PRIORITY[a.tag.name] ?? 99;
+    const priorityB = TAG_PRIORITY[b.tag.name] ?? 99;
+    return priorityA - priorityB;
+  })[0];
+}
+```
+
+### Prospect Intelligence System
+
+Specialized for sales pipeline management:
+
+**Stages**: `new_lead` → `qualifying` → `demo_scheduled` → `proposal_sent` → `negotiating` → `closed_won` → `closed_lost`
+
+**Actions**: Reply Now, Schedule Demo, Send Proposal, Follow Up, Nurture, Re-engage, On Track
+
+**Focus Areas**:
+- Buying signals (budget mentions, timeline questions)
+- Competitor mentions
+- Stakeholder identification
+- Objection handling
+- Demo scheduling
+
+### Customer Intelligence System
+
+Specialized for customer relationship management:
+
+**Statuses**: `happy`, `satisfied`, `neutral`, `frustrated`, `at_risk`, `resolved`
+
+**Actions**: Reply Now, Check In, Send Resource, Schedule Call, Escalate, On Track
+
+**Focus Areas**:
+- Satisfaction signals
+- Feature adoption
+- Support needs
+- Expansion opportunities
+- Renewal risks
+
+### Churned Intelligence System
+
+Specialized for win-back opportunities:
+
+**Statuses**: `winnable`, `warm`, `cold`, `lost_forever`, `won_back`, `re_engaged`
+
+**Actions**: Personal Outreach, Send Offer, Address Concerns, Re-engage, Celebrate Win, On Track
+
+**Focus Areas**:
+- Churn reasons
+- Pricing sensitivity
+- Competitor switches
+- Re-engagement signals
+- Win-back timing
+
+### AI Analysis Output
+
+All intelligence systems produce a consistent output structure:
+
+```typescript
+interface AIAnalysisResult {
+  status: string;           // Tag-specific status
+  statusReason: string;     // Evidence from conversation
+  action: string;           // Recommended action badge
+  urgency: 'critical' | 'high' | 'medium' | 'low';
+  summary: string;          // 1-2 sentence relationship summary
+  suggestedAction: string;  // Specific next step
+  risk?: 'none' | 'low' | 'medium' | 'high';
+  riskReason?: string;
+  analyzedByTag: string;    // Which tag's AI analyzed this
+}
+```
+
+### AI Settings Modal
+
+The AI Settings modal (accessible via gear icon on tags) allows configuration:
+
+- **Enable/Disable AI**: Toggle AI analysis for the tag
+- **System Prompt**: View and customize the AI prompt (with reset to default)
+- **Last Run**: Shows when analysis was last run
+
+Only these 5 tags appear in the AI Settings dropdown: Customer Groups, Partner, Prospect, Customer, Churned.
+
+### Smart Re-Analysis Triggers
+
+All 5 intelligence systems share the same triggers:
+
+1. **New Messages**: When new Telegram messages sync, stale conversations are detected and re-analyzed
+2. **Notes Changes**: Adding/editing/deleting notes forces immediate re-analysis (`forceReanalyze: true`)
+3. **Periodic Check**: Every 2 minutes, background task checks for conversations needing analysis
+4. **Manual Trigger**: "Run Analysis" button in AI Settings modal
+
+### Tracking Which Tag Analyzed
+
+The `aiAnalyzedTagName` field on each conversation records which intelligence system last analyzed it:
+
+```prisma
+model Conversation {
+  // ... other fields
+  aiAnalyzedTagName   String?   // "Churned", "Customer", "Partner", etc.
+}
+```
+
+This helps users understand why certain recommendations are made (e.g., a Customer+Churned contact shows "Analyzed by: Churned").

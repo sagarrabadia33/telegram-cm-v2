@@ -70,6 +70,9 @@ export async function GET(
         aiOwnerNames: true,
         aiAnalysisInterval: true,
         aiLastAnalyzedAt: true,
+        _count: {
+          select: { conversations: true }
+        }
       },
     });
 
@@ -78,11 +81,15 @@ export async function GET(
     }
 
     return NextResponse.json({
-      ...tag,
-      // Provide default values if not set
-      aiSystemPrompt: tag.aiSystemPrompt || DEFAULT_CUSTOMER_GROUPS_PROMPT,
-      aiTeamMembers: tag.aiTeamMembers.length > 0 ? tag.aiTeamMembers : ['Jesus', 'Prathamesh'],
-      aiOwnerNames: tag.aiOwnerNames.length > 0 ? tag.aiOwnerNames : ['Shalin'],
+      id: tag.id,
+      name: tag.name,
+      aiEnabled: tag.aiEnabled,
+      aiLastAnalyzedAt: tag.aiLastAnalyzedAt,
+      conversationCount: tag._count.conversations,
+      // Return actual stored prompt (null means using default)
+      aiSystemPrompt: tag.aiSystemPrompt,
+      aiTeamMembers: tag.aiTeamMembers,
+      aiOwnerNames: tag.aiOwnerNames,
       aiAnalysisInterval: tag.aiAnalysisInterval || 5,
     });
   } catch (error) {
@@ -124,15 +131,20 @@ export async function PUT(
         id: true,
         name: true,
         aiEnabled: true,
-        aiSystemPrompt: true,
-        aiTeamMembers: true,
-        aiOwnerNames: true,
-        aiAnalysisInterval: true,
         aiLastAnalyzedAt: true,
+        _count: {
+          select: { conversations: true }
+        }
       },
     });
 
-    return NextResponse.json(tag);
+    return NextResponse.json({
+      id: tag.id,
+      name: tag.name,
+      aiEnabled: tag.aiEnabled,
+      aiLastAnalyzedAt: tag.aiLastAnalyzedAt,
+      conversationCount: tag._count.conversations,
+    });
   } catch (error) {
     console.error('Error updating tag AI settings:', error);
     return NextResponse.json(

@@ -5,7 +5,8 @@ import { NoteIcon, MeetingIcon, CallIcon, FileNoteIcon, PlusIcon, TrashIcon, Edi
 
 // Global notes cache for instant loading - Lightning speed!
 // Notes persist across tab switches and panel re-renders
-const notesCache = new Map<string, {
+// Export so ContactModal can access it for notes count badge
+export const notesCache = new Map<string, {
   notes: NoteEntry[];
   fetchedAt: number;
 }>();

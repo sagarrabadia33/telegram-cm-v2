@@ -2,59 +2,6 @@
 
 import { useState, useEffect, useRef } from 'react';
 
-// Default prompt used when user hasn't customized - this is what powers the Action & Summary columns
-// IMPORTANT: This should match DEFAULT_AI_SYSTEM_PROMPT in /api/ai/analyze-conversations/route.ts
-const DEFAULT_SYSTEM_PROMPT = `You are an AI assistant analyzing customer conversations for a CRM system.
-
-TEAM CONTEXT:
-- Owner/CEO names: {{ownerNames}}
-- Team members: {{teamMembers}}
-- Bot messages (automated) should NOT be counted as team responses
-
-YOUR MISSION: Provide actionable intelligence. Surface what needs attention NOW.
-
-CRITICAL RULES:
-
-1. TIME IS EVERYTHING
-   - If customer sent last message AND it's been 2+ days = they're waiting = RED FLAG
-   - If team sent last message = ball is in customer's court = usually OK
-   - Silent for 7+ days after active engagement = concerning
-   - Bot messages don't count as team responses
-
-2. ACTION, NOT STATUS
-   Think "what should happen next?"
-   - "Reply Now" = customer waiting, needs response
-   - "Schedule Call" = complex issue needs discussion
-   - "Send Resource" = customer needs education/docs
-   - "Check In" = been quiet, worth a touchpoint
-   - "Escalate" = owner needs to personally handle
-   - "On Track" = nothing needed right now
-
-3. SPECIFICITY IS EVERYTHING
-   BAD: "Customer needs follow-up"
-   GOOD: "Customer asked about API rate limits 3 days ago. No response yet. They seem stuck on integration."
-
-4. URGENCY SCORING
-   - Customer waiting 3+ days = HIGH
-   - Multiple unresolved issues = HIGH
-   - Competitor mention = CRITICAL
-   - Payment/billing issues = CRITICAL
-   - Customer frustrated tone = HIGH
-   - Routine questions answered = LOW
-   - Waiting on customer = LOW
-
-OUTPUT FORMAT (strict JSON - do not deviate):
-{
-  "action": "Reply Now" | "Schedule Call" | "Send Resource" | "Check In" | "Escalate" | "On Track" | "Monitor",
-  "urgency": "critical" | "high" | "medium" | "low",
-  "daysWaiting": <number or null if not applicable>,
-  "summary": "<1-2 sentences: What's happening + what's at stake. Lead with urgency if any.>",
-  "nextStep": "<Specific action: who should do what. Be concrete.>",
-  "openItems": ["<list of unresolved customer questions/requests if any>"],
-  "risk": "none" | "low" | "medium" | "high",
-  "riskReason": "<if risk > low, explain why with evidence from conversation>"
-}`;
-
 interface Tag {
   id: string;
   name: string;
@@ -65,11 +12,9 @@ interface AISettings {
   id: string;
   name: string;
   aiEnabled: boolean;
-  aiSystemPrompt: string;
-  aiTeamMembers: string[];
-  aiOwnerNames: string[];
-  aiAnalysisInterval: number;
+  aiSystemPrompt: string | null;
   aiLastAnalyzedAt: string | null;
+  conversationCount: number;
 }
 
 interface AISettingsModalProps {
@@ -81,6 +26,155 @@ interface AISettingsModalProps {
   onAnalyze?: (tagId: string) => Promise<void>;
 }
 
+// Default prompts per tag
+const DEFAULT_PROMPTS: Record<string, string> = {
+  'Customer Groups': `You are an AI assistant analyzing customer support conversations.
+
+TEAM CONTEXT:
+- Owner/CEO: {{ownerNames}}
+- Team members: {{teamMembers}}
+
+MISSION: Identify who needs response and flag escalations for the owner.
+
+URGENCY RULES:
+- Customer waiting 3+ days = HIGH
+- Multiple unresolved issues = HIGH
+- Competitor mention = CRITICAL
+- Payment/billing issues = CRITICAL
+- Routine questions answered = LOW
+
+OUTPUT FORMAT (JSON):
+{
+  "action": "Reply Now" | "Schedule Call" | "Send Resource" | "Check In" | "Escalate" | "On Track" | "Monitor",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "<1-2 sentences: current state and what's at stake>",
+  "nextStep": "<specific action: who should do what>",
+  "risk": "none" | "low" | "medium" | "high",
+  "riskReason": "<if risk > low, explain why>"
+}`,
+
+  'Customer': `You are analyzing Shalin's direct relationships with customer executives.
+
+CONTEXT: These are 1:1 private chats with paying customer owners - not support, but relationship maintenance.
+
+RELATIONSHIP HEALTH:
+- happy: Engaged, positive sentiment
+- needs_attention: Question or issue waiting
+- at_risk: Signs of dissatisfaction
+- escalated: Serious issue being handled
+- resolved: Issue addressed, stable
+
+URGENCY:
+- Waiting 5+ days = CRITICAL
+- Payment issue = CRITICAL
+- Frustration = HIGH
+- No touchpoint 2+ weeks = MEDIUM
+
+OUTPUT FORMAT (JSON):
+{
+  "status": "happy" | "needs_attention" | "at_risk" | "escalated" | "resolved",
+  "action": "Personal Check-in" | "Address Concern" | "Celebrate Win" | "Discuss Renewal" | "Resolve Issue" | "Strengthen Relationship" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "<relationship state and pending items>",
+  "nextStep": "<specific personal action for Shalin>"
+}`,
+
+  'Partner': `You are analyzing partner/referral relationships for Beast Insights.
+
+CONTEXT: Partners are referral sources - payment processors, ISOs, industry contacts.
+Value exchange: 5% lifetime revenue share for referrals.
+
+RELATIONSHIP STAGES:
+- nurturing: Early conversations, exploring fit
+- high_potential: Strong network, actively engaging
+- active: Actively referring
+- committed: Formal agreement signed
+- dormant: Gone quiet 7+ days
+
+URGENCY:
+- Partner waiting 7+ days = CRITICAL
+- Inbound lead waiting 3+ days = CRITICAL
+- Mentioned referral, no follow-up = HIGH
+
+OUTPUT FORMAT (JSON):
+{
+  "status": "nurturing" | "high_potential" | "active" | "committed" | "dormant",
+  "action": "Reply Now" | "Schedule Call" | "Send Intro" | "Follow Up" | "Nurture" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "<relationship state and network value>",
+  "nextStep": "<specific action for Shalin>"
+}`,
+
+  'Prospect': `You are analyzing sales pipeline conversations.
+
+CONTEXT: Prospects met at conferences or referred by partners. Goal: book demos, convert to customers.
+
+PIPELINE STAGES:
+- new_lead: Just connected
+- qualifying: Exploring fit
+- demo_scheduled: Demo booked
+- demo_completed: Post-demo follow-up
+- negotiating: Discussing terms
+- closed_won/closed_lost: Outcome
+- nurturing: Long-term warm
+
+URGENCY:
+- Hot lead waiting 3+ days = CRITICAL
+- Demo requested, not scheduled = HIGH
+- Post-demo no follow-up = HIGH
+
+OUTPUT FORMAT (JSON):
+{
+  "status": "new_lead" | "qualifying" | "demo_scheduled" | "demo_completed" | "negotiating" | "closed_won" | "closed_lost" | "nurturing",
+  "action": "Book Demo" | "Send Follow-up" | "Share Case Study" | "Send Proposal" | "Close Deal" | "Nurture" | "Re-engage" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "<pipeline stage and conversion potential>",
+  "nextStep": "<specific sales action>"
+}`,
+
+  'Churned': `You are analyzing churned customer win-back opportunities.
+
+CONTEXT: These customers previously used Beast but stopped. Goal: understand why and win them back.
+
+WIN-BACK STAGES:
+- recently_churned: Left within 30 days, warm
+- cooling: 30-90 days, getting cold
+- cold: 90+ days, re-activation needed
+- re_engaged: Showing interest again
+- won_back: Successfully returned
+
+URGENCY:
+- Recently churned (< 30 days) = CRITICAL
+- Responded to outreach = HIGH
+- Cold but high-value = MEDIUM
+
+OUTPUT FORMAT (JSON):
+{
+  "status": "recently_churned" | "cooling" | "cold" | "re_engaged" | "won_back",
+  "action": "Win Back Call" | "Send Offer" | "Personal Outreach" | "Final Attempt" | "Close File" | "Celebrate Win" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "<churn reason and win-back potential>",
+  "nextStep": "<specific re-engagement action>"
+}`
+};
+
+const GENERIC_DEFAULT_PROMPT = `You are an AI assistant analyzing conversations for a CRM system.
+
+TEAM CONTEXT:
+- Owner/CEO: {{ownerNames}}
+- Team members: {{teamMembers}}
+
+MISSION: Identify what needs attention and suggest next actions.
+
+OUTPUT FORMAT (JSON):
+{
+  "action": "Reply Now" | "Schedule Call" | "Check In" | "On Track" | "Monitor",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "<1-2 sentences about current state>",
+  "nextStep": "<specific recommended action>",
+  "risk": "none" | "low" | "medium" | "high"
+}`;
+
 export default function AISettingsModal({
   isOpen,
   onClose,
@@ -91,111 +185,113 @@ export default function AISettingsModal({
 }: AISettingsModalProps) {
   const [settings, setSettings] = useState<AISettings | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'settings' | 'status'>('settings');
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Form state
   const [aiEnabled, setAiEnabled] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [teamMembers, setTeamMembers] = useState('');
-  const [ownerNames, setOwnerNames] = useState('');
-  const [analysisInterval, setAnalysisInterval] = useState(5);
-
-  // Analysis status
-  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
 
   const modalRef = useRef<HTMLDivElement>(null);
 
-  // Fetch settings when tag is selected
+  const getDefaultPrompt = (tagName: string) => DEFAULT_PROMPTS[tagName] || GENERIC_DEFAULT_PROMPT;
+
+  const isDefaultPrompt = (tagName: string, prompt: string) => {
+    const defaultPrompt = getDefaultPrompt(tagName);
+    return !prompt || prompt.trim() === defaultPrompt.trim();
+  };
+
   useEffect(() => {
     if (!selectedTagId || !isOpen) return;
 
     const fetchSettings = async () => {
       setIsLoading(true);
-      setError(null);
+      setHasChanges(false);
+      setShowPrompt(false);
 
       try {
         const response = await fetch(`/api/tags/${selectedTagId}/ai-settings`);
-        if (!response.ok) throw new Error('Failed to fetch AI settings');
+        if (!response.ok) throw new Error('Failed to fetch');
 
         const data = await response.json();
         setSettings(data);
         setAiEnabled(data.aiEnabled);
-        // Show default prompt if user hasn't customized - so they can see what's being used
-        setSystemPrompt(data.aiSystemPrompt || DEFAULT_SYSTEM_PROMPT);
-        setTeamMembers(data.aiTeamMembers?.join(', ') || '');
-        setOwnerNames(data.aiOwnerNames?.join(', ') || '');
-        setAnalysisInterval(data.aiAnalysisInterval || 5);
 
-        // Also fetch status counts
-        const statusResponse = await fetch(`/api/ai/analyze-conversations?tagId=${selectedTagId}`);
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json();
-          setStatusCounts(statusData.statusCounts || {});
-        }
+        const tagName = allTags.find(t => t.id === selectedTagId)?.name || '';
+        setSystemPrompt(data.aiSystemPrompt || getDefaultPrompt(tagName));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
+        console.error('Error:', err);
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchSettings();
-  }, [selectedTagId, isOpen]);
+  }, [selectedTagId, isOpen, allTags]);
 
-  // Close on escape key
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-
     if (isOpen) {
       document.addEventListener('keydown', handleEscape);
       return () => document.removeEventListener('keydown', handleEscape);
     }
   }, [isOpen, onClose]);
 
-  // Close on click outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [isOpen, onClose]);
 
-  const handleSave = async () => {
-    if (!selectedTagId) return;
+  const handleToggle = () => {
+    setAiEnabled(!aiEnabled);
+    setHasChanges(true);
+  };
 
+  const handlePromptChange = (value: string) => {
+    setSystemPrompt(value);
+    setHasChanges(true);
+  };
+
+  const handleResetPrompt = () => {
+    const tagName = allTags.find(t => t.id === selectedTagId)?.name || '';
+    setSystemPrompt(getDefaultPrompt(tagName));
+    setHasChanges(true);
+  };
+
+  const handleSave = async () => {
+    if (!selectedTagId || !hasChanges) return;
     setIsSaving(true);
-    setError(null);
 
     try {
+      const tagName = allTags.find(t => t.id === selectedTagId)?.name || '';
+      const isDefault = isDefaultPrompt(tagName, systemPrompt);
+
       const response = await fetch(`/api/tags/${selectedTagId}/ai-settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           aiEnabled,
-          aiSystemPrompt: systemPrompt,
-          aiTeamMembers: teamMembers.split(',').map(s => s.trim()).filter(Boolean),
-          aiOwnerNames: ownerNames.split(',').map(s => s.trim()).filter(Boolean),
-          aiAnalysisInterval: analysisInterval,
+          aiSystemPrompt: isDefault ? null : systemPrompt,
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to save settings');
+      if (!response.ok) throw new Error('Failed to save');
 
       const data = await response.json();
-      setSettings(data);
+      setSettings(prev => prev ? { ...prev, ...data, aiSystemPrompt: isDefault ? null : systemPrompt } : null);
+      setHasChanges(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      console.error('Error:', err);
     } finally {
       setIsSaving(false);
     }
@@ -203,9 +299,7 @@ export default function AISettingsModal({
 
   const handleAnalyzeNow = async () => {
     if (!selectedTagId) return;
-
     setIsAnalyzing(true);
-    setError(null);
 
     try {
       if (onAnalyze) {
@@ -216,18 +310,16 @@ export default function AISettingsModal({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tagId: selectedTagId, forceRefresh: true }),
         });
-
-        if (!response.ok) throw new Error('Failed to run analysis');
+        if (!response.ok) throw new Error('Failed');
       }
 
-      // Refresh status counts
-      const statusResponse = await fetch(`/api/ai/analyze-conversations?tagId=${selectedTagId}`);
-      if (statusResponse.ok) {
-        const statusData = await statusResponse.json();
-        setStatusCounts(statusData.statusCounts || {});
+      const response = await fetch(`/api/tags/${selectedTagId}/ai-settings`);
+      if (response.ok) {
+        const data = await response.json();
+        setSettings(prev => prev ? { ...prev, aiLastAnalyzedAt: data.aiLastAnalyzedAt } : null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Analysis failed');
+      console.error('Error:', err);
     } finally {
       setIsAnalyzing(false);
     }
@@ -236,6 +328,23 @@ export default function AISettingsModal({
   if (!isOpen) return null;
 
   const selectedTag = allTags.find(t => t.id === selectedTagId);
+  const isUsingDefault = selectedTag ? isDefaultPrompt(selectedTag.name, systemPrompt) : true;
+
+  const formatLastAnalyzed = (dateStr: string | null) => {
+    if (!dateStr) return 'Never';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
+  };
 
   return (
     <div
@@ -247,42 +356,40 @@ export default function AISettingsModal({
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 1000,
-        backdropFilter: 'blur(4px)',
       }}
     >
       <div
         ref={modalRef}
         style={{
-          width: '640px',
+          width: '480px',
           maxWidth: '90vw',
+          height: '540px',
           maxHeight: '85vh',
           background: 'var(--bg-primary)',
-          borderRadius: '12px',
-          boxShadow: '0 20px 60px rgba(0, 0, 0, 0.4)',
+          borderRadius: '8px',
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.32)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
         }}
       >
-        {/* Header */}
+        {/* Header - 48px */}
         <div style={{
+          height: '48px',
+          minHeight: '48px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '16px 20px',
+          padding: '0 16px',
           borderBottom: '1px solid var(--border-subtle)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '18px' }}>✨</span>
-            <div>
-              <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                AI Conversation Intelligence
-              </h2>
-              <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                Configure AI analysis for tagged conversations
-              </p>
-            </div>
-          </div>
+          <span style={{
+            fontSize: '13px',
+            fontWeight: 600,
+            color: 'var(--text-primary)',
+          }}>
+            AI Analysis
+          </span>
           <button
             onClick={onClose}
             style={{
@@ -293,468 +400,271 @@ export default function AISettingsModal({
               justifyContent: 'center',
               background: 'transparent',
               border: 'none',
-              borderRadius: '6px',
+              borderRadius: '4px',
               cursor: 'pointer',
               color: 'var(--text-tertiary)',
               fontSize: '18px',
             }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
             ×
           </button>
         </div>
 
-        {/* Tag Selector */}
-        <div style={{
-          padding: '12px 20px',
-          borderBottom: '1px solid var(--border-subtle)',
-          background: 'var(--bg-secondary)',
-        }}>
-          <label style={{
-            display: 'block',
-            fontSize: '11px',
-            fontWeight: 600,
-            color: 'var(--text-tertiary)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px',
-            marginBottom: '6px',
-          }}>
-            Select Tag to Configure
-          </label>
-          <select
-            value={selectedTagId || ''}
-            onChange={(e) => onTagSelect(e.target.value || null)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              fontSize: '13px',
-              color: 'var(--text-primary)',
-              background: 'var(--bg-primary)',
-              border: '1px solid var(--border-default)',
-              borderRadius: '6px',
-              cursor: 'pointer',
-            }}
-          >
-            <option value="">Select a tag...</option>
-            {allTags.map(tag => (
-              <option key={tag.id} value={tag.id}>
-                {tag.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Content - flexible */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {/* Tag Selector - fixed 56px */}
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+            <select
+              value={selectedTagId || ''}
+              onChange={(e) => onTagSelect(e.target.value || null)}
+              style={{
+                width: '100%',
+                height: '32px',
+                padding: '0 10px',
+                fontSize: '13px',
+                color: 'var(--text-primary)',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-default)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              <option value="">Select a tag...</option>
+              {allTags
+                .filter(tag => ['Customer Groups', 'Partner', 'Prospect', 'Customer', 'Churned'].includes(tag.name))
+                .map(tag => (
+                  <option key={tag.id} value={tag.id}>{tag.name}</option>
+                ))}
+            </select>
+          </div>
 
-        {/* Content */}
-        {selectedTagId ? (
-          <>
-            {/* Tabs */}
-            <div style={{
-              display: 'flex',
-              borderBottom: '1px solid var(--border-subtle)',
-            }}>
-              <button
-                onClick={() => setActiveTab('settings')}
-                style={{
-                  flex: 1,
-                  padding: '12px',
-                  fontSize: '13px',
-                  fontWeight: 500,
-                  color: activeTab === 'settings' ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: activeTab === 'settings' ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                  cursor: 'pointer',
-                }}
-              >
-                Settings
-              </button>
-              <button
-                onClick={() => setActiveTab('status')}
-                style={{
-                  flex: 1,
-                  padding: '12px',
-                  fontSize: '13px',
-                  fontWeight: 500,
-                  color: activeTab === 'status' ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: activeTab === 'status' ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                  cursor: 'pointer',
-                }}
-              >
-                Status
-              </button>
-            </div>
-
-            {/* Tab Content */}
-            <div style={{ flex: 1, overflow: 'auto', padding: '20px' }}>
-              {isLoading ? (
-                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
-                  Loading settings...
-                </div>
-              ) : activeTab === 'settings' ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  {/* Enable/Disable Toggle */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '12px 16px',
-                    background: aiEnabled ? 'rgba(139, 92, 246, 0.1)' : 'var(--bg-secondary)',
-                    borderRadius: '8px',
-                    border: `1px solid ${aiEnabled ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-                  }}>
-                    <div>
-                      <div style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>
-                        AI Analysis Enabled
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                        Automatically analyze conversations with this tag
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setAiEnabled(!aiEnabled)}
-                      style={{
-                        width: '44px',
-                        height: '24px',
-                        borderRadius: '12px',
-                        background: aiEnabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                        border: 'none',
-                        cursor: 'pointer',
-                        position: 'relative',
-                        transition: 'background 200ms ease',
-                      }}
-                    >
-                      <div style={{
-                        width: '20px',
-                        height: '20px',
-                        borderRadius: '50%',
-                        background: 'white',
-                        position: 'absolute',
-                        top: '2px',
-                        left: aiEnabled ? '22px' : '2px',
-                        transition: 'left 200ms ease',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                      }} />
-                    </button>
-                  </div>
-
-                  {/* Team Members */}
+          {/* Main content - scrollable */}
+          {selectedTagId ? (
+            isLoading ? (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>Loading...</span>
+              </div>
+            ) : (
+              <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
+                {/* Toggle Row */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  height: '36px',
+                  marginBottom: '16px',
+                }}>
                   <div>
-                    <label style={{
-                      display: 'block',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      color: 'var(--text-secondary)',
-                      marginBottom: '6px',
-                    }}>
-                      Team Members (comma separated)
-                    </label>
-                    <input
-                      type="text"
-                      value={teamMembers}
-                      onChange={(e) => setTeamMembers(e.target.value)}
-                      placeholder="Jesus, Prathamesh"
-                      style={{
-                        width: '100%',
-                        padding: '10px 12px',
-                        fontSize: '13px',
-                        color: 'var(--text-primary)',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: '6px',
-                      }}
-                    />
-                    <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--text-quaternary)' }}>
-                      Handle routine customer support and day-to-day queries
-                    </p>
+                    <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                      Enable AI
+                    </span>
+                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: '8px' }}>
+                      Analyze conversations automatically
+                    </span>
                   </div>
-
-                  {/* Owner Names */}
-                  <div>
-                    <label style={{
-                      display: 'block',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      color: 'var(--text-secondary)',
-                      marginBottom: '6px',
-                    }}>
-                      Owner Names (comma separated)
-                    </label>
-                    <input
-                      type="text"
-                      value={ownerNames}
-                      onChange={(e) => setOwnerNames(e.target.value)}
-                      placeholder="Shalin"
-                      style={{
-                        width: '100%',
-                        padding: '10px 12px',
-                        fontSize: '13px',
-                        color: 'var(--text-primary)',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: '6px',
-                      }}
-                    />
-                    <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--text-quaternary)' }}>
-                      Escalate pricing, contracts, and critical issues to owners
-                    </p>
-                  </div>
-
-                  {/* Analysis Interval */}
-                  <div>
-                    <label style={{
-                      display: 'block',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      color: 'var(--text-secondary)',
-                      marginBottom: '6px',
-                    }}>
-                      Analysis Interval (minutes)
-                    </label>
-                    <input
-                      type="number"
-                      value={analysisInterval}
-                      onChange={(e) => setAnalysisInterval(parseInt(e.target.value) || 5)}
-                      min={1}
-                      max={60}
-                      style={{
-                        width: '100px',
-                        padding: '10px 12px',
-                        fontSize: '13px',
-                        color: 'var(--text-primary)',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: '6px',
-                      }}
-                    />
-                    <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--text-quaternary)' }}>
-                      How often to re-analyze conversations with new messages
-                    </p>
-                  </div>
-
-                  {/* System Prompt - Linear Design */}
-                  <div>
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      marginBottom: '8px',
-                    }}>
-                      <div>
-                        <label style={{
-                          display: 'block',
-                          fontSize: '13px',
-                          fontWeight: 600,
-                          color: 'var(--text-primary)',
-                          marginBottom: '2px',
-                        }}>
-                          Analysis Prompt
-                        </label>
-                        <span style={{
-                          fontSize: '11px',
-                          color: 'var(--text-tertiary)',
-                        }}>
-                          Controls what appears in Action & Summary columns
-                        </span>
-                      </div>
-                      {systemPrompt !== DEFAULT_SYSTEM_PROMPT && (
-                        <button
-                          type="button"
-                          onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
-                          style={{
-                            fontSize: '11px',
-                            fontWeight: 500,
-                            color: 'var(--text-tertiary)',
-                            background: 'var(--bg-tertiary)',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: '4px 10px',
-                            borderRadius: '4px',
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background = 'var(--bg-hover)';
-                            e.currentTarget.style.color = 'var(--text-secondary)';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background = 'var(--bg-tertiary)';
-                            e.currentTarget.style.color = 'var(--text-tertiary)';
-                          }}
-                        >
-                          Reset to default
-                        </button>
-                      )}
-                    </div>
-
-                    <textarea
-                      value={systemPrompt}
-                      onChange={(e) => setSystemPrompt(e.target.value)}
-                      rows={14}
-                      style={{
-                        width: '100%',
-                        padding: '12px',
-                        fontSize: '11px',
-                        fontFamily: 'ui-monospace, SFMono-Regular, SF Mono, Menlo, monospace',
-                        color: 'var(--text-primary)',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: '8px',
-                        resize: 'vertical',
-                        lineHeight: '1.5',
-                      }}
-                    />
-
-                    {/* Helper text */}
-                    <div style={{
-                      marginTop: '8px',
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '6px',
-                      fontSize: '11px',
-                      color: 'var(--text-quaternary)',
-                      lineHeight: 1.4,
-                    }}>
-                      <span style={{ color: 'var(--text-tertiary)' }}>Tip:</span>
-                      <span>
-                        Use <code style={{ background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px' }}>{'{{ownerNames}}'}</code> and
-                        <code style={{ background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: '3px', fontSize: '10px', marginLeft: '3px' }}>{'{{teamMembers}}'}</code> to
-                        dynamically insert names from the fields above.
-                      </span>
-                    </div>
-                  </div>
-
-                  {error && (
-                    <div style={{
-                      padding: '12px',
-                      background: '#FEE2E2',
-                      color: '#B91C1C',
-                      borderRadius: '6px',
-                      fontSize: '13px',
-                    }}>
-                      {error}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                /* Status Tab */
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  {/* Status Summary Cards */}
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(3, 1fr)',
-                    gap: '12px',
-                  }}>
-                    <StatusCard
-                      label="Needs Owner"
-                      count={statusCounts.needs_owner || 0}
-                      color="#EF4444"
-                      icon="🔴"
-                    />
-                    <StatusCard
-                      label="At Risk"
-                      count={statusCounts.at_risk || 0}
-                      color="#F59E0B"
-                      icon="⚠️"
-                    />
-                    <StatusCard
-                      label="Team Handling"
-                      count={statusCounts.team_handling || 0}
-                      color="#3B82F6"
-                      icon="👥"
-                    />
-                    <StatusCard
-                      label="Resolved"
-                      count={statusCounts.resolved || 0}
-                      color="#10B981"
-                      icon="✓"
-                    />
-                    <StatusCard
-                      label="Monitoring"
-                      count={statusCounts.monitoring || 0}
-                      color="#6B7280"
-                      icon="👁"
-                    />
-                    <StatusCard
-                      label="Unanalyzed"
-                      count={statusCounts.unanalyzed || 0}
-                      color="#9CA3AF"
-                      icon="?"
-                    />
-                  </div>
-
-                  {/* Last Analysis Info */}
-                  {settings?.aiLastAnalyzedAt && (
-                    <div style={{
-                      padding: '12px 16px',
-                      background: 'var(--bg-secondary)',
-                      borderRadius: '8px',
-                      fontSize: '13px',
-                      color: 'var(--text-secondary)',
-                    }}>
-                      Last analyzed: {new Date(settings.aiLastAnalyzedAt).toLocaleString()}
-                    </div>
-                  )}
-
-                  {/* Analyze Now Button */}
                   <button
-                    onClick={handleAnalyzeNow}
-                    disabled={isAnalyzing || !aiEnabled}
+                    onClick={handleToggle}
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '8px',
-                      padding: '12px 20px',
-                      fontSize: '14px',
-                      fontWeight: 500,
-                      color: 'white',
+                      width: '36px',
+                      height: '20px',
+                      borderRadius: '10px',
                       background: aiEnabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
                       border: 'none',
-                      borderRadius: '8px',
-                      cursor: aiEnabled ? 'pointer' : 'not-allowed',
-                      opacity: isAnalyzing ? 0.7 : 1,
+                      cursor: 'pointer',
+                      position: 'relative',
+                      transition: 'background 150ms',
                     }}
                   >
-                    {isAnalyzing ? (
-                      <>
-                        <span style={{ animation: 'spin 1s linear infinite' }}>⟳</span>
-                        Analyzing...
-                      </>
-                    ) : (
-                      <>
-                        ✨ Analyze All Conversations Now
-                      </>
-                    )}
+                    <div style={{
+                      width: '16px',
+                      height: '16px',
+                      borderRadius: '8px',
+                      background: 'white',
+                      position: 'absolute',
+                      top: '2px',
+                      left: aiEnabled ? '18px' : '2px',
+                      transition: 'left 150ms',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                    }} />
                   </button>
-
-                  {!aiEnabled && (
-                    <p style={{
-                      textAlign: 'center',
-                      fontSize: '12px',
-                      color: 'var(--text-quaternary)',
-                    }}>
-                      Enable AI analysis in the Settings tab to run analysis
-                    </p>
-                  )}
                 </div>
-              )}
-            </div>
 
-            {/* Footer */}
-            {activeTab === 'settings' && (
-              <div style={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: '12px',
-                padding: '16px 20px',
-                borderTop: '1px solid var(--border-subtle)',
-                background: 'var(--bg-secondary)',
-              }}>
+                {aiEnabled && (
+                  <>
+                    {/* Stats */}
+                    <div style={{
+                      display: 'flex',
+                      gap: '8px',
+                      marginBottom: '16px',
+                    }}>
+                      <div style={{
+                        flex: 1,
+                        padding: '10px 12px',
+                        background: 'var(--bg-secondary)',
+                        borderRadius: '6px',
+                      }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '2px' }}>
+                          Conversations
+                        </div>
+                        <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          {settings?.conversationCount ?? 0}
+                        </div>
+                      </div>
+                      <div style={{
+                        flex: 1,
+                        padding: '10px 12px',
+                        background: 'var(--bg-secondary)',
+                        borderRadius: '6px',
+                      }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '2px' }}>
+                          Last analyzed
+                        </div>
+                        <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                          {formatLastAnalyzed(settings?.aiLastAnalyzedAt ?? null)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* System Prompt */}
+                    <div>
+                      <button
+                        onClick={() => setShowPrompt(!showPrompt)}
+                        style={{
+                          width: '100%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          height: '36px',
+                          padding: '0 12px',
+                          background: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: showPrompt ? '6px 6px 0 0' : '6px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                            System Prompt
+                          </span>
+                          <span style={{
+                            fontSize: '11px',
+                            color: isUsingDefault ? 'var(--text-tertiary)' : 'var(--accent-primary)',
+                            background: isUsingDefault ? 'var(--bg-tertiary)' : 'rgba(99, 102, 241, 0.1)',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                          }}>
+                            {isUsingDefault ? 'Default' : 'Custom'}
+                          </span>
+                        </div>
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 12 12"
+                          fill="none"
+                          style={{
+                            transform: showPrompt ? 'rotate(180deg)' : 'rotate(0)',
+                            transition: 'transform 150ms',
+                          }}
+                        >
+                          <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+
+                      {showPrompt && (
+                        <div style={{
+                          border: '1px solid var(--border-subtle)',
+                          borderTop: 'none',
+                          borderRadius: '0 0 6px 6px',
+                          overflow: 'hidden',
+                        }}>
+                          <textarea
+                            value={systemPrompt}
+                            onChange={(e) => handlePromptChange(e.target.value)}
+                            style={{
+                              width: '100%',
+                              height: '180px',
+                              padding: '10px 12px',
+                              fontSize: '11px',
+                              fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
+                              lineHeight: 1.5,
+                              color: 'var(--text-primary)',
+                              background: 'var(--bg-primary)',
+                              border: 'none',
+                              resize: 'none',
+                              outline: 'none',
+                            }}
+                          />
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            height: '32px',
+                            padding: '0 12px',
+                            background: 'var(--bg-secondary)',
+                            borderTop: '1px solid var(--border-subtle)',
+                          }}>
+                            <span style={{ fontSize: '11px', color: 'var(--text-quaternary)' }}>
+                              {systemPrompt.length.toLocaleString()} chars
+                            </span>
+                            {!isUsingDefault && (
+                              <button
+                                onClick={handleResetPrompt}
+                                style={{
+                                  fontSize: '11px',
+                                  color: 'var(--text-tertiary)',
+                                  background: 'transparent',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  padding: '4px 8px',
+                                  borderRadius: '4px',
+                                }}
+                              >
+                                Reset to default
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          ) : (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
+                Select a tag to configure
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer - 56px */}
+        {selectedTagId && !isLoading && (
+          <div style={{
+            height: '56px',
+            minHeight: '56px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: '8px',
+            padding: '0 16px',
+            borderTop: '1px solid var(--border-subtle)',
+            background: 'var(--bg-secondary)',
+          }}>
+            {hasChanges ? (
+              <>
                 <button
-                  onClick={onClose}
+                  onClick={() => {
+                    setHasChanges(false);
+                    const tagName = allTags.find(t => t.id === selectedTagId)?.name || '';
+                    setAiEnabled(settings?.aiEnabled ?? false);
+                    setSystemPrompt(settings?.aiSystemPrompt || getDefaultPrompt(tagName));
+                  }}
                   style={{
-                    padding: '8px 16px',
+                    height: '32px',
+                    padding: '0 12px',
                     fontSize: '13px',
                     fontWeight: 500,
                     color: 'var(--text-secondary)',
@@ -770,82 +680,43 @@ export default function AISettingsModal({
                   onClick={handleSave}
                   disabled={isSaving}
                   style={{
-                    padding: '8px 20px',
+                    height: '32px',
+                    padding: '0 16px',
                     fontSize: '13px',
                     fontWeight: 500,
                     color: 'white',
                     background: 'var(--accent-primary)',
                     border: 'none',
                     borderRadius: '6px',
-                    cursor: 'pointer',
+                    cursor: isSaving ? 'not-allowed' : 'pointer',
                     opacity: isSaving ? 0.7 : 1,
                   }}
                 >
-                  {isSaving ? 'Saving...' : 'Save Settings'}
+                  {isSaving ? 'Saving...' : 'Save'}
                 </button>
-              </div>
-            )}
-          </>
-        ) : (
-          <div style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '60px 20px',
-            color: 'var(--text-tertiary)',
-            textAlign: 'center',
-          }}>
-            <div>
-              <div style={{ fontSize: '32px', marginBottom: '12px' }}>🏷️</div>
-              <div style={{ fontSize: '14px', marginBottom: '4px' }}>Select a tag to configure AI analysis</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>
-                AI will analyze conversations tagged with your selection
-              </div>
-            </div>
+              </>
+            ) : aiEnabled ? (
+              <button
+                onClick={handleAnalyzeNow}
+                disabled={isAnalyzing}
+                style={{
+                  height: '32px',
+                  padding: '0 14px',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  color: 'var(--text-primary)',
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '6px',
+                  cursor: isAnalyzing ? 'not-allowed' : 'pointer',
+                  opacity: isAnalyzing ? 0.7 : 1,
+                }}
+              >
+                {isAnalyzing ? 'Analyzing...' : 'Run Analysis'}
+              </button>
+            ) : null}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-// Status card component
-function StatusCard({
-  label,
-  count,
-  color,
-  icon,
-}: {
-  label: string;
-  count: number;
-  color: string;
-  icon: string;
-}) {
-  return (
-    <div style={{
-      padding: '12px 16px',
-      background: 'var(--bg-secondary)',
-      borderRadius: '8px',
-      borderLeft: `3px solid ${color}`,
-    }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        marginBottom: '4px',
-      }}>
-        <span style={{ fontSize: '12px' }}>{icon}</span>
-        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500 }}>
-          {label}
-        </span>
-      </div>
-      <div style={{
-        fontSize: '20px',
-        fontWeight: 600,
-        color: 'var(--text-primary)',
-      }}>
-        {count}
       </div>
     </div>
   );

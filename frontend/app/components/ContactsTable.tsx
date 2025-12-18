@@ -51,7 +51,7 @@ export interface Contact {
   aiChurnRisk: 'high' | 'medium' | 'low' | null;
   aiChurnSignals: string[] | null;
   aiSuggestedAction: string | null;
-  aiAction: 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | 'Send Intro' | 'Follow Up' | 'Nurture' | null; // AI's action recommendation
+  aiAction: 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor' | 'Send Intro' | 'Follow Up' | 'Nurture' | 'Win Back Call' | 'Send Offer' | 'Personal Outreach' | 'Final Attempt' | 'Close File' | 'Celebrate Win' | 'Book Demo' | 'Send Follow-up' | 'Share Case Study' | 'Send Proposal' | 'Close Deal' | 'Re-engage' | 'Personal Check-in' | 'Address Concern' | 'Discuss Renewal' | 'Resolve Issue' | 'Strengthen Relationship' | null; // AI's action recommendation
   hasAiEnabled: boolean;
   // Real-time analysis state
   aiAnalyzing: boolean;
@@ -262,14 +262,18 @@ function getUrgencyBgColor(status: AiStatus | null, daysInactive: number): strin
 function getStatusLabel(status: AiStatus | null): string {
   if (!status) return 'Review';
 
-  // Status label mapping (supports Customer, Partner, and Churned statuses)
+  // Status label mapping (supports Customer, Customer Groups, Partner, Churned, and Prospect statuses)
   const statusLabels: Record<string, string> = {
-    // Customer statuses
+    // Customer Groups statuses (team handles)
     needs_owner: 'Needs Owner',
-    at_risk: 'At Risk',
     team_handling: 'Team Handling',
-    resolved: 'Resolved',
     monitoring: 'Monitoring',
+    // Customer statuses (Shalin's direct relationships)
+    happy: 'Happy',
+    needs_attention: 'Needs Attention',
+    at_risk: 'At Risk',
+    escalated: 'Escalated',
+    resolved: 'Resolved',
     // Partner statuses
     nurturing: 'Nurturing',
     high_potential: 'High Potential',
@@ -282,6 +286,14 @@ function getStatusLabel(status: AiStatus | null): string {
     lost: 'Lost',
     re_engaged: 'Re-engaged',
     won_back: 'Won Back',
+    // Prospect statuses (sales pipeline)
+    new_lead: 'New Lead',
+    qualifying: 'Qualifying',
+    demo_scheduled: 'Demo Scheduled',
+    demo_completed: 'Demo Done',
+    negotiating: 'Negotiating',
+    closed_won: 'Closed Won',
+    closed_lost: 'Closed Lost',
   };
 
   return statusLabels[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -292,14 +304,18 @@ function getStatusLabel(status: AiStatus | null): string {
 // PRIORITY: Use AI's actual action recommendation when available
 // ============================================================================
 
-// AI Action types - includes Customer, Partner, and Churned actions
+// AI Action types - includes Customer, Customer Groups, Partner, Churned, and Prospect actions
 type AiAction =
-  // Customer/Customer Groups actions
+  // Customer Groups actions (team handles)
   | 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor'
+  // Customer actions (Shalin's direct relationships)
+  | 'Personal Check-in' | 'Address Concern' | 'Discuss Renewal' | 'Resolve Issue' | 'Strengthen Relationship'
   // Partner actions
   | 'Send Intro' | 'Follow Up' | 'Nurture'
   // Churned win-back actions
   | 'Win Back Call' | 'Send Offer' | 'Personal Outreach' | 'Final Attempt' | 'Close File' | 'Celebrate Win'
+  // Prospect sales actions
+  | 'Book Demo' | 'Send Follow-up' | 'Share Case Study' | 'Send Proposal' | 'Close Deal' | 'Re-engage'
   | null;
 
 // Get action label from AI's recommendation (preferred) or fallback to status-based
@@ -348,6 +364,28 @@ function getActionLabelFromAI(aiAction: AiAction, status: AiStatus | null, daysI
       return 'Send Offer';
     case 'won_back':
       return 'Celebrate Win';
+    // Prospect statuses
+    case 'new_lead':
+      return 'Book Demo';
+    case 'qualifying':
+      return 'Send Follow-up';
+    case 'demo_scheduled':
+      return 'On Track';
+    case 'demo_completed':
+      return 'Send Follow-up';
+    case 'negotiating':
+      return 'Close Deal';
+    case 'closed_won':
+      return 'Celebrate Win';
+    case 'closed_lost':
+      return 'Close File';
+    // Customer statuses (Shalin's direct relationships)
+    case 'happy':
+      return 'On Track';
+    case 'needs_attention':
+      return 'Address Concern';
+    case 'escalated':
+      return 'Resolve Issue';
     default:
       return 'Review';
   }
@@ -378,25 +416,36 @@ function getUrgencyLevelFromAI(
       case 'Reply Now':
       case 'Escalate':
       case 'Win Back Call':  // Churned - time sensitive win-back
+      case 'Close Deal':     // Prospect - ready to sign, don't lose momentum
+      case 'Resolve Issue':  // Customer - Shalin personally handling serious issue
         return 'critical';
       // High urgency actions
       case 'Schedule Call':
       case 'Follow Up':
       case 'Send Offer':     // Churned - re-engaged, strike while hot
       case 'Personal Outreach': // Churned - needs personal touch
+      case 'Book Demo':      // Prospect - hot lead, book before they cool off
+      case 'Send Proposal':  // Prospect - decision stage, strike while hot
+      case 'Address Concern': // Customer - customer raised issue, needs response
+      case 'Discuss Renewal': // Customer - renewal conversation, time sensitive
         return 'high';
       // Medium urgency actions
       case 'Send Resource':
       case 'Check In':
       case 'Send Intro':
       case 'Final Attempt':  // Churned - last try before closing
+      case 'Send Follow-up': // Prospect - keep conversation going
+      case 'Share Case Study': // Prospect - nurture with value
+      case 'Re-engage':      // Prospect - reconnect with cold lead
+      case 'Personal Check-in': // Customer - proactive relationship building
+      case 'Strengthen Relationship': // Customer - deepen the relationship
         return 'medium';
       // Low urgency actions
       case 'On Track':
       case 'Monitor':
       case 'Nurture':
       case 'Close File':     // Churned - no urgency, just administrative
-      case 'Celebrate Win':  // Churned - won back, no urgency
+      case 'Celebrate Win':  // Churned/Prospect/Customer - won, no urgency
         return 'low';
     }
   }

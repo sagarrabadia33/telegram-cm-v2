@@ -127,6 +127,8 @@ interface AIAnalysisResult {
   // Status recommendation (for manual override scenarios)
   statusRecommendation?: string | null;
   statusRecommendationReason?: string | null;
+  // Track which tag was used for analysis
+  analyzedByTag?: string;
 }
 
 interface MessageForAnalysis {
@@ -266,37 +268,68 @@ function formatMessagesForAnalysis(messages: MessageForAnalysis[], tagName?: str
 
 // Build tag-specific output format instructions
 function buildOutputFormat(tagConfig: TagConfig | null): string {
-  const statusOptions = tagConfig?.aiStatusOptions as string[] | null;
   const tagName = tagConfig?.name?.toLowerCase() || 'customer';
 
-  if (tagName.includes('partner')) {
-    // Partner-specific output format
-    const statusList = statusOptions?.map(s => `"${s}"`).join(' | ') || '"nurturing" | "high_potential" | "active" | "dormant" | "committed"';
+  if (tagName === 'customer') {
+    // Customer-specific output format (Shalin's direct 1:1 relationships)
     return `{
-  "action": "Reply Now" | "Schedule Call" | "Send Resource" | "Check In" | "Escalate" | "On Track" | "Monitor",
+  "status": "happy" | "needs_attention" | "at_risk" | "escalated" | "resolved",
+  "action": "Personal Check-in" | "Address Concern" | "Celebrate Win" | "Discuss Renewal" | "Resolve Issue" | "Strengthen Relationship" | "On Track",
   "urgency": "critical" | "high" | "medium" | "low",
-  "status": ${statusList},
-  "statusReason": "SPECIFIC explanation citing evidence from conversation.",
-  "summary": "Relationship context: how met (if known), their value/network, current state.",
+  "relationshipHealth": "strong" | "stable" | "cooling" | "at_risk",
+  "summary": "Current relationship state, any pending issues, recent wins or concerns.",
+  "suggestedAction": "Specific action for Shalin. Be personal and relationship-focused.",
+  "customerSentiment": "positive" | "neutral" | "frustrated" | "unknown",
+  "openIssues": ["any unresolved concerns or requests"],
+  "opportunities": ["expansion, referral, or upsell opportunities mentioned"]
+}`;
+  } else if (tagName === 'prospect') {
+    // Prospect-specific output format (sales pipeline)
+    return `{
+  "status": "new_lead" | "qualifying" | "demo_scheduled" | "demo_completed" | "negotiating" | "closed_won" | "closed_lost" | "nurturing",
+  "action": "Book Demo" | "Send Follow-up" | "Share Case Study" | "Send Proposal" | "Close Deal" | "Nurture" | "Re-engage" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "How you connected, their business, where they are in the sales process.",
+  "suggestedAction": "Specific action for Shalin.",
+  "buyingSignals": ["signals that indicate they're ready to buy"],
+  "objections": ["concerns or hesitations they've raised"],
+  "dealPotential": "high" | "medium" | "low"
+}`;
+  } else if (tagName === 'churned') {
+    // Churned-specific output format (win-back)
+    return `{
+  "status": "winnable" | "long_shot" | "lost" | "re_engaged" | "won_back",
+  "action": "Win Back Call" | "Send Offer" | "Personal Outreach" | "Final Attempt" | "Close File" | "Celebrate Win",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "Why they left + current win-back status.",
+  "suggestedAction": "Specific win-back action.",
+  "churnReason": "payment_failed | competitor | no_value | budget | bad_experience | unknown",
+  "winBackPotential": "high" | "medium" | "low",
+  "winBackSignals": ["positive signals that suggest they might come back"]
+}`;
+  } else if (tagName === 'partner') {
+    // Partner-specific output format
+    return `{
+  "status": "nurturing" | "high_potential" | "active" | "dormant" | "committed",
+  "action": "Reply Now" | "Schedule Call" | "Send Intro" | "Follow Up" | "Nurture" | "On Track",
+  "urgency": "critical" | "high" | "medium" | "low",
+  "summary": "Relationship context: how met, their value/network, current state.",
   "suggestedAction": "Specific, actionable next step for Shalin.",
-  "partnerSignals": [{"type": "positive|warning|risk|opportunity", "signal": "Specific signal detected"}],
-  "statusRecommendation": "If current status should change, what to (or null)",
-  "statusRecommendationReason": "Why the change is recommended (or null)"
+  "risk": "none" | "low" | "medium" | "high",
+  "riskReason": "if risk > low, explain why"
 }`;
   } else {
-    // Customer-specific output format (default)
-    const statusList = statusOptions?.map(s => `"${s}"`).join(' | ') || '"needs_owner" | "team_handling" | "resolved" | "at_risk" | "monitoring"';
+    // Customer Groups-specific output format (team handles)
     return `{
   "action": "Reply Now" | "Schedule Call" | "Send Resource" | "Check In" | "Escalate" | "On Track" | "Monitor",
   "urgency": "critical" | "high" | "medium" | "low",
-  "status": ${statusList},
-  "statusReason": "SPECIFIC explanation citing evidence from conversation.",
+  "status": "needs_owner" | "team_handling" | "resolved" | "at_risk" | "monitoring",
   "summary": "1-2 sentence summary of current situation.",
+  "suggestedAction": "Actionable recommendation.",
   "churnRisk": "high" | "medium" | "low",
   "churnSignals": ["Specific signal with evidence"],
-  "suggestedAction": "Actionable recommendation.",
-  "statusRecommendation": "If current status should change, what to (or null)",
-  "statusRecommendationReason": "Why the change is recommended (or null)"
+  "risk": "none" | "low" | "medium" | "high",
+  "riskReason": "if risk > low, explain why with evidence"
 }`;
   }
 }
@@ -460,7 +493,10 @@ Return ONLY valid JSON.`;
     .replace(/```\n?/g, '')
     .trim();
 
-  return JSON.parse(cleanedResponse);
+  const result = JSON.parse(cleanedResponse);
+  // Add which tag was used for analysis
+  result.analyzedByTag = tagName;
+  return result;
 }
 
 // POST /api/ai/auto-analyze - Trigger analysis for conversations with new messages
@@ -560,6 +596,8 @@ export async function POST(request: NextRequest) {
             aiLastAnalyzedMsgId: currentConv?.lastSyncedMessageId || conv.lastSyncedMessageId,
             aiAnalyzing: false,
             aiAnalyzingStartedAt: null,
+            // Track which tag was used for this analysis
+            aiAnalyzedTagName: analysis.analyzedByTag || null,
           };
 
           // Add Customer-specific fields if present
