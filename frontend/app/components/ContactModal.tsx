@@ -806,6 +806,7 @@ export default function ContactModal({
               <TabButton
                 active={activeTab === 'ai'}
                 onClick={() => setActiveTab('ai')}
+                icon={<AISparkleIcon size={12} />}
               >
                 AI
               </TabButton>
@@ -1248,11 +1249,13 @@ function TabButton({
   onClick,
   children,
   badge,
+  icon,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
   badge?: number;
+  icon?: React.ReactNode;
 }) {
   return (
     <button
@@ -1260,7 +1263,7 @@ function TabButton({
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: '5px',
+        gap: '4px',
         padding: '5px 12px',
         fontSize: '11px',
         fontWeight: 500,
@@ -1272,6 +1275,7 @@ function TabButton({
         transition: 'all 150ms ease',
       }}
     >
+      {icon && <span style={{ display: 'flex', alignItems: 'center' }}>{icon}</span>}
       {children}
       {badge !== undefined && badge > 0 && (
         <span style={{
@@ -1315,6 +1319,15 @@ function SparkleIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
       <path d="M8 1L9.17 5.83L14 7L9.17 8.17L8 13L6.83 8.17L2 7L6.83 5.83L8 1Z" />
+    </svg>
+  );
+}
+
+function AISparkleIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" />
+      <path d="M19 13l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3z" />
     </svg>
   );
 }
@@ -1435,56 +1448,168 @@ interface ChatMessage {
   content: string;
 }
 
-// Smart question suggestions based on contact context
+// ============================================================================
+// TAG-AWARE SMART SUGGESTIONS
+// High-value questions based on tag context and AI state
+// ============================================================================
+
 function getSmartSuggestions(contact: Contact): string[] {
   const tags = contact.tags || [];
   const tagNames = tags.map(t => t.name.toLowerCase());
-
-  // Check AI analysis state
   const aiAction = contact.aiAction;
   const aiUrgency = contact.aiUrgencyLevel;
+  const aiStatus = contact.aiStatus;
 
-  // High urgency - need to act fast
-  if (aiUrgency === 'critical' || aiUrgency === 'high') {
+  // Priority 1: CHURNED - Win-back focus
+  if (tagNames.includes('churned')) {
+    if (aiStatus === 'winnable' || aiStatus === 'warm') {
+      return [
+        'Why did they churn and what would bring them back?',
+        'What pricing or offer might win them back?',
+        'Draft a personal re-engagement message',
+      ];
+    }
+    if (aiStatus === 're_engaged' || aiStatus === 'won_back') {
+      return [
+        'What made them come back?',
+        'Any concerns I should address to keep them?',
+        'What can I do to prevent future churn?',
+      ];
+    }
     return [
-      'What\'s the urgent issue I need to address?',
-      'What context do I need before responding?',
-      'Draft a response to address their concern',
+      'What was their churn reason?',
+      'Is there an opportunity to win them back?',
+      'What competitor did they switch to?',
     ];
   }
 
-  // Customer Groups specific
-  if (tagNames.includes('customer groups') || tagNames.includes('customer')) {
+  // Priority 2: CUSTOMER - Relationship health focus
+  if (tagNames.includes('customer') && !tagNames.includes('customer groups')) {
+    if (aiUrgency === 'critical' || aiUrgency === 'high') {
+      return [
+        'What\'s the urgent issue I need to address?',
+        'Are they at risk of churning?',
+        'Draft a response to resolve their concern',
+      ];
+    }
+    if (aiStatus === 'happy' || aiStatus === 'satisfied') {
+      return [
+        'Any expansion or upsell opportunities?',
+        'Would they be a good referral source?',
+        'What features are they using most?',
+      ];
+    }
+    if (aiStatus === 'frustrated' || aiStatus === 'at_risk') {
+      return [
+        'What\'s causing their frustration?',
+        'What can I do to save this relationship?',
+        'Should I escalate or offer something?',
+      ];
+    }
     return [
-      'What are their open issues or questions?',
-      'What\'s their sentiment and engagement level?',
-      'Any churn risk signals I should know about?',
+      'How is our relationship with this customer?',
+      'Any open issues I should know about?',
+      'What\'s their usage and engagement like?',
     ];
   }
 
-  // Partner specific
+  // Priority 3: CUSTOMER GROUPS - Support focus
+  if (tagNames.includes('customer groups')) {
+    if (aiAction === 'Reply Now' || aiAction === 'Escalate') {
+      return [
+        'What question is waiting for my response?',
+        'Who in the group needs help?',
+        'Draft a response to address their issue',
+      ];
+    }
+    return [
+      'What are the active issues in this group?',
+      'Who are the key stakeholders I should know?',
+      'Any frustrated members I should address?',
+    ];
+  }
+
+  // Priority 4: PARTNER - Relationship & referral focus
   if (tagNames.includes('partner')) {
+    if (aiStatus === 'high_potential' || aiStatus === 'nurturing') {
+      return [
+        'What\'s their network and referral potential?',
+        'How can I provide value to strengthen this relationship?',
+        'What would move them to active partnership?',
+      ];
+    }
+    if (aiStatus === 'active' || aiStatus === 'committed') {
+      return [
+        'Any referrals in progress I should follow up on?',
+        'What can I do to help them succeed?',
+        'Are there intros I should make for them?',
+      ];
+    }
+    if (aiStatus === 'dormant') {
+      return [
+        'Why did this relationship go quiet?',
+        'What would re-engage them?',
+        'Is this partnership still worth pursuing?',
+      ];
+    }
     return [
-      'Summarize our partnership status',
-      'What commitments or deliverables are pending?',
+      'Summarize our partnership and their network value',
+      'What referrals or intros have they made?',
       'How can I strengthen this relationship?',
     ];
   }
 
-  // Needs follow-up
-  if (aiAction === 'Reply Now' || aiAction === 'Check In') {
+  // Priority 5: PROSPECT - Sales focus
+  if (tagNames.includes('prospect')) {
+    if (aiStatus === 'new_lead' || aiStatus === 'qualifying') {
+      return [
+        'What do I know about their needs and budget?',
+        'What\'s the best way to qualify this lead?',
+        'Draft a message to schedule a demo',
+      ];
+    }
+    if (aiStatus === 'demo_scheduled' || aiStatus === 'proposal_sent') {
+      return [
+        'What objections might they have?',
+        'What\'s blocking them from signing?',
+        'Draft a follow-up to move the deal forward',
+      ];
+    }
+    if (aiStatus === 'negotiating') {
+      return [
+        'What are their key concerns in negotiation?',
+        'What pricing flexibility do I have?',
+        'What would close this deal?',
+      ];
+    }
+    if (aiStatus === 'closed_won') {
+      return [
+        'What made them convert?',
+        'Any onboarding items I should prepare?',
+        'Who else in their network could be a prospect?',
+      ];
+    }
     return [
-      'What do they need from me?',
-      'What was the last thing we discussed?',
-      'Draft a follow-up message',
+      'What\'s the status of this sales opportunity?',
+      'What are their pain points and needs?',
+      'What\'s the next step to move them forward?',
+    ];
+  }
+
+  // Action-based fallback (when no specific tag)
+  if (aiAction === 'Reply Now' || aiUrgency === 'critical' || aiUrgency === 'high') {
+    return [
+      'What do they need from me right now?',
+      'What context do I need before responding?',
+      'Draft a response to address their message',
     ];
   }
 
   // Default - general research
   return [
-    'Give me a quick brief on this contact',
-    'What are the key topics we\'ve discussed?',
-    'Any action items or pending requests?',
+    'Give me a quick summary of this relationship',
+    'What are the key things I should know?',
+    'Any pending items or action needed?',
   ];
 }
 
