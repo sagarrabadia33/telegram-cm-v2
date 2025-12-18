@@ -1008,3 +1008,55 @@ model Conversation {
 ```
 
 This helps users understand why certain recommendations are made (e.g., a Customer+Churned contact shows "Analyzed by: Churned").
+
+---
+
+## Contact Modal AI Tab
+
+The AI tab in the Contact Modal provides an interactive research assistant for each contact.
+
+### AI Chat Persistence
+
+AI conversations persist while the app is open using session-based memory:
+
+```typescript
+// Session-based AI chat cache - same pattern as notesCache
+const aiChatCache = new Map<string, ChatMessage[]>();
+```
+
+**Behavior**:
+- **Instant restore**: Switch between contacts and your AI conversations are preserved
+- **Auto-save**: Every message automatically persists to cache
+- **Session-based**: Cache clears on page refresh (fresh start each session)
+- **New chat button**: `+` icon appears when there's history to start fresh
+
+**Why session-based (not LocalStorage/Database)**:
+- AI context changes as new messages arrive - stale cached conversations would be misleading
+- Matches user mental model: "Keep my context while I work, fresh start when I come back"
+- Zero latency - no API calls or storage operations
+
+### AI Chat Context
+
+The AI assistant has access to:
+- **Messages**: Up to 500 messages with deep analysis mode
+- **Notes**: All timeline notes with full content
+- **Files**: PDF text extraction from attachments
+- **Contact info**: Name, tags, existing AI analysis
+- **Chat history**: Previous questions in current session
+
+### Smart Suggestions
+
+Context-aware suggestions appear in empty state based on:
+- Contact's AI action (Reply Now → "What do they need from me?")
+- Contact's urgency level
+- Relationship stage
+
+```typescript
+function getSmartSuggestions(contact: Contact): string[] {
+  // Returns 3 relevant questions based on contact state
+  if (aiAction === 'Reply Now') {
+    return ['What do they need from me?', ...];
+  }
+  // ... other contexts
+}
+```
