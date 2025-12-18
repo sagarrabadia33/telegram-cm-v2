@@ -1449,6 +1449,142 @@ interface ChatMessage {
 }
 
 // ============================================================================
+// AI CONTEXT INDICATOR - Shows what data the AI has access to
+// Linear style: subtle, informative, builds trust
+// ============================================================================
+
+function AIContextIndicator({ contact }: { contact: Contact }) {
+  const tags = contact.tags || [];
+  const messageCount = contact.totalMessages || 0;
+  const notesFromCache = notesCache.get(contact.id);
+  const notesCount = notesFromCache?.notes?.length || 0;
+
+  // Calculate days since first contact
+  const firstContactDate = contact.firstContactDate ? new Date(contact.firstContactDate) : null;
+  const daysSinceFirst = firstContactDate
+    ? Math.floor((Date.now() - firstContactDate.getTime()) / (1000 * 60 * 60 * 24))
+    : 0;
+
+  // Format relationship duration
+  const durationText = daysSinceFirst > 365
+    ? `${Math.floor(daysSinceFirst / 365)}y history`
+    : daysSinceFirst > 30
+    ? `${Math.floor(daysSinceFirst / 30)}mo history`
+    : daysSinceFirst > 0
+    ? `${daysSinceFirst}d history`
+    : 'New contact';
+
+  // Build context items
+  const contextItems: string[] = [];
+
+  if (messageCount > 0) {
+    contextItems.push(`${messageCount} messages`);
+  }
+
+  if (notesCount > 0) {
+    contextItems.push(`${notesCount} note${notesCount > 1 ? 's' : ''}`);
+  }
+
+  if (daysSinceFirst > 0) {
+    contextItems.push(durationText);
+  }
+
+  // Show AI analysis status if available
+  const hasAiAnalysis = contact.aiSummary || contact.aiStatus;
+
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: '6px',
+      marginBottom: '4px',
+    }}>
+      {/* Main context line */}
+      <div style={{
+        fontSize: '11px',
+        color: 'var(--text-tertiary)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+      }}>
+        {contextItems.length > 0 ? (
+          <>
+            <span style={{
+              color: 'var(--text-quaternary)',
+              fontSize: '10px',
+            }}>
+              Context:
+            </span>
+            {contextItems.map((item, i) => (
+              <span key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {i > 0 && <span style={{ color: 'var(--border-default)' }}>·</span>}
+                <span>{item}</span>
+              </span>
+            ))}
+          </>
+        ) : (
+          <span>No conversation history yet</span>
+        )}
+      </div>
+
+      {/* Tags line - only if has tags */}
+      {tags.length > 0 && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
+          flexWrap: 'wrap',
+          justifyContent: 'center',
+        }}>
+          {tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag.id}
+              style={{
+                fontSize: '9px',
+                fontWeight: 500,
+                color: tag.color || 'var(--text-tertiary)',
+                background: tag.color ? `${tag.color}15` : 'var(--bg-tertiary)',
+                padding: '2px 6px',
+                borderRadius: '3px',
+              }}
+            >
+              {tag.name}
+            </span>
+          ))}
+          {tags.length > 3 && (
+            <span style={{
+              fontSize: '9px',
+              color: 'var(--text-quaternary)',
+            }}>
+              +{tags.length - 3}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* AI analysis indicator */}
+      {hasAiAnalysis && (
+        <div style={{
+          fontSize: '10px',
+          color: 'var(--accent-primary)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
+          opacity: 0.8,
+        }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+            <polyline points="22 4 12 14.01 9 11.01" />
+          </svg>
+          <span>AI-analyzed</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // TAG-AWARE SMART SUGGESTIONS
 // High-value questions based on tag context and AI state
 // ============================================================================
@@ -1717,19 +1853,19 @@ function ContactAIChat({ contact }: { contact: Contact }) {
         gap: '12px',
       }}>
         {messages.length === 0 ? (
-          // Empty state with suggestions
+          // Empty state with context + suggestions
           <div style={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '16px',
+            gap: '12px',
             padding: '20px',
           }}>
             <div style={{
-              width: '40px',
-              height: '40px',
+              width: '36px',
+              height: '36px',
               borderRadius: '10px',
               background: 'var(--accent-subtle)',
               display: 'flex',
@@ -1738,14 +1874,9 @@ function ContactAIChat({ contact }: { contact: Contact }) {
             }}>
               <SparkleIcon />
             </div>
-            <div style={{
-              textAlign: 'center',
-              color: 'var(--text-secondary)',
-              fontSize: '13px',
-              maxWidth: '240px',
-            }}>
-              Ask me anything about this contact before diving in
-            </div>
+
+            {/* Context indicator - what the AI knows */}
+            <AIContextIndicator contact={contact} />
 
             {/* Smart suggestions */}
             <div style={{
