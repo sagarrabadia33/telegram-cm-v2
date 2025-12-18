@@ -1044,19 +1044,33 @@ The AI assistant has access to:
 - **Contact info**: Name, tags, existing AI analysis
 - **Chat history**: Previous questions in current session
 
-### Smart Suggestions
+### Smart Suggestions (Tag-Aware)
 
-Context-aware suggestions appear in empty state based on:
-- Contact's AI action (Reply Now → "What do they need from me?")
-- Contact's urgency level
-- Relationship stage
+Context-aware suggestions appear in empty state, tailored to each tag's domain:
+
+| Tag | Focus | Example Questions |
+|-----|-------|-------------------|
+| **Churned** | Win-back | "Why did they churn?", "What offer might bring them back?" |
+| **Customer** | Relationship health | "Any expansion opportunities?", "Are they at risk?" |
+| **Customer Groups** | Support | "What question is waiting?", "Who needs help?" |
+| **Partner** | Referrals | "What's their network potential?", "Any referrals in progress?" |
+| **Prospect** | Sales | "What's blocking the deal?", "Draft a follow-up" |
+
+Questions also adapt to AI status:
+- Churned + `winnable` → "What pricing would bring them back?"
+- Customer + `frustrated` → "What's causing frustration?"
+- Partner + `dormant` → "Why did this relationship go quiet?"
+- Prospect + `negotiating` → "What would close this deal?"
 
 ```typescript
 function getSmartSuggestions(contact: Contact): string[] {
-  // Returns 3 relevant questions based on contact state
-  if (aiAction === 'Reply Now') {
-    return ['What do they need from me?', ...];
+  // Uses tag priority: Churned > Customer > Customer Groups > Partner > Prospect
+  // Then refines by aiStatus for maximum relevance
+  if (tagNames.includes('churned')) {
+    if (aiStatus === 'winnable') {
+      return ['Why did they churn?', 'What offer might win them back?', ...];
+    }
   }
-  // ... other contexts
+  // ... 150+ lines of tag-aware logic
 }
 ```
