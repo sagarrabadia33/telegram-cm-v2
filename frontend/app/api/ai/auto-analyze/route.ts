@@ -113,9 +113,11 @@ interface TagConfig {
 // Universal AI analysis result (works for any tag type)
 interface AIAnalysisResult {
   status: string;
-  statusReason: string;
+  statusReason?: string;
   summary: string;
   suggestedAction: string;
+  // Current topic - what the LAST 5-10 messages are actually about
+  currentTopic?: string;
   // Action badge field - the primary action indicator
   action?: 'Reply Now' | 'Schedule Call' | 'Send Resource' | 'Check In' | 'Escalate' | 'On Track' | 'Monitor';
   urgency?: 'critical' | 'high' | 'medium' | 'low';
@@ -250,20 +252,107 @@ async function fetchPrivateChatContext(
   return privateContext;
 }
 
+// Type for note data from Prisma
+interface NoteForAnalysis {
+  type: string;
+  title: string | null;
+  content: string;
+  eventAt: Date | null;
+  createdAt: Date;
+}
+
+// Unified timeline entry - can be either a message or a note
+interface TimelineEntry {
+  type: 'message' | 'note';
+  timestamp: Date;
+  // For messages
+  direction?: 'inbound' | 'outbound';
+  senderName?: string | null;
+  body?: string | null;
+  // For notes
+  noteType?: string;
+  noteTitle?: string | null;
+  noteContent?: string;
+}
+
 function formatMessagesForAnalysis(messages: MessageForAnalysis[], tagName?: string): string {
   // Use appropriate labels based on tag type
+  // CRITICAL: Direction indicators must be crystal clear for AI analysis
   const isPartner = tagName?.toLowerCase().includes('partner');
-  const outboundLabel = isPartner ? 'Shalin' : 'Team';
-  const inboundLabel = isPartner ? 'Partner' : 'Customer';
+  const isProspect = tagName?.toLowerCase().includes('prospect');
+
+  // Use explicit direction markers so AI knows who's waiting
+  const outboundLabel = 'Shalin (us)';
+  const inboundLabel = isPartner ? 'Partner' : isProspect ? 'Prospect' : 'Customer';
 
   return messages
     .filter(m => m.body && m.body.trim().length > 0)
     .map(m => {
       const time = new Date(m.sentAt).toLocaleString();
+      // Add explicit direction marker: → for outbound, ← for inbound
+      const dirMarker = m.direction === 'outbound' ? '→' : '←';
       const sender = m.direction === 'outbound' ? outboundLabel : (m.senderName || inboundLabel);
-      return `[${time}] ${sender}: ${m.body}`;
+      return `[${time}] ${dirMarker} ${sender}: ${m.body}`;
     })
     .join('\n');
+}
+
+/**
+ * Creates a unified chronological timeline from messages and notes
+ * Notes are inserted at their eventAt time (when event happened), not createdAt
+ * This gives AI a complete picture of the relationship history
+ */
+function formatUnifiedTimeline(
+  messages: MessageForAnalysis[],
+  notes: NoteForAnalysis[],
+  tagName?: string
+): string {
+  const isPartner = tagName?.toLowerCase().includes('partner');
+  const isProspect = tagName?.toLowerCase().includes('prospect');
+  const outboundLabel = 'Shalin (us)';
+  const inboundLabel = isPartner ? 'Partner' : isProspect ? 'Prospect' : 'Customer';
+
+  // Convert messages to timeline entries
+  const messageEntries: TimelineEntry[] = messages
+    .filter(m => m.body && m.body.trim().length > 0)
+    .map(m => ({
+      type: 'message' as const,
+      timestamp: new Date(m.sentAt),
+      direction: m.direction as 'inbound' | 'outbound',
+      senderName: m.senderName,
+      body: m.body,
+    }));
+
+  // Convert notes to timeline entries - use eventAt (when it happened) if available
+  const noteEntries: TimelineEntry[] = notes.map(n => ({
+    type: 'note' as const,
+    timestamp: n.eventAt ? new Date(n.eventAt) : new Date(n.createdAt),
+    noteType: n.type,
+    noteTitle: n.title,
+    noteContent: n.content,
+  }));
+
+  // Merge and sort chronologically (oldest first for natural reading)
+  const timeline = [...messageEntries, ...noteEntries]
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+  // Format the unified timeline
+  return timeline.map(entry => {
+    const time = entry.timestamp.toLocaleString();
+
+    if (entry.type === 'message') {
+      const dirMarker = entry.direction === 'outbound' ? '→' : '←';
+      const sender = entry.direction === 'outbound' ? outboundLabel : (entry.senderName || inboundLabel);
+      return `[${time}] ${dirMarker} ${sender}: ${entry.body}`;
+    } else {
+      // Note entry - marked with 📝 and type indicator
+      const noteIcon = entry.noteType === 'meeting' ? '📅' : entry.noteType === 'call' ? '📞' : '📝';
+      const title = entry.noteTitle ? `${entry.noteTitle}: ` : '';
+      const content = entry.noteContent?.slice(0, 300) || '';
+      const truncated = entry.noteContent && entry.noteContent.length > 300 ? '...' : '';
+      return `[${time}] ${noteIcon} INTERNAL NOTE: ${title}${content}${truncated}`;
+    }
+  }).join('\n');
 }
 
 // Build tag-specific output format instructions
@@ -277,11 +366,12 @@ function buildOutputFormat(tagConfig: TagConfig | null): string {
   "action": "Personal Check-in" | "Address Concern" | "Celebrate Win" | "Discuss Renewal" | "Resolve Issue" | "Strengthen Relationship" | "On Track",
   "urgency": "critical" | "high" | "medium" | "low",
   "relationshipHealth": "strong" | "stable" | "cooling" | "at_risk",
-  "summary": "Current relationship state, any pending issues, recent wins or concerns.",
-  "suggestedAction": "Specific action for Shalin. Be personal and relationship-focused.",
+  "currentTopic": "What the MOST RECENT messages are about - be specific.",
+  "summary": "Brief status of the relationship based on recent messages. What's happening now.",
+  "suggestedAction": "Specific action related to the current conversation topic.",
   "customerSentiment": "positive" | "neutral" | "frustrated" | "unknown",
-  "openIssues": ["any unresolved concerns or requests"],
-  "opportunities": ["expansion, referral, or upsell opportunities mentioned"]
+  "openIssues": ["any unresolved concerns from recent messages"],
+  "opportunities": ["expansion, referral, or upsell opportunities mentioned recently"]
 }`;
   } else if (tagName === 'prospect') {
     // Prospect-specific output format (sales pipeline)
@@ -289,23 +379,25 @@ function buildOutputFormat(tagConfig: TagConfig | null): string {
   "status": "new_lead" | "qualifying" | "demo_scheduled" | "demo_completed" | "negotiating" | "closed_won" | "closed_lost" | "nurturing",
   "action": "Book Demo" | "Send Follow-up" | "Share Case Study" | "Send Proposal" | "Close Deal" | "Nurture" | "Re-engage" | "On Track",
   "urgency": "critical" | "high" | "medium" | "low",
-  "summary": "How you connected, their business, where they are in the sales process.",
-  "suggestedAction": "Specific action for Shalin.",
-  "buyingSignals": ["signals that indicate they're ready to buy"],
-  "objections": ["concerns or hesitations they've raised"],
+  "currentTopic": "What the MOST RECENT messages are about - be specific.",
+  "summary": "Deal status based on recent activity. Where the prospect stands now.",
+  "suggestedAction": "Specific action based on the current conversation topic.",
+  "buyingSignals": ["recent signals that indicate they're ready to buy"],
+  "objections": ["recent concerns or hesitations they've raised"],
   "dealPotential": "high" | "medium" | "low"
 }`;
   } else if (tagName === 'churned') {
     // Churned-specific output format (win-back)
     return `{
   "status": "winnable" | "long_shot" | "lost" | "re_engaged" | "won_back",
-  "action": "Win Back Call" | "Send Offer" | "Personal Outreach" | "Final Attempt" | "Close File" | "Celebrate Win",
+  "action": "Reply Now" | "Win Back Call" | "Send Offer" | "Personal Outreach" | "Final Attempt" | "Close File" | "Celebrate Win",
   "urgency": "critical" | "high" | "medium" | "low",
-  "summary": "Why they left + current win-back status.",
-  "suggestedAction": "Specific win-back action.",
+  "currentTopic": "What the MOST RECENT messages are about - any recent engagement?",
+  "summary": "Win-back status. If they've reached out recently, note that - it's a signal!",
+  "suggestedAction": "Specific next step. If they messaged recently, prioritize responding!",
   "churnReason": "payment_failed | competitor | no_value | budget | bad_experience | unknown",
   "winBackPotential": "high" | "medium" | "low",
-  "winBackSignals": ["positive signals that suggest they might come back"]
+  "winBackSignals": ["positive signals - especially if THEY initiated recent contact"]
 }`;
   } else if (tagName === 'partner') {
     // Partner-specific output format
@@ -313,8 +405,9 @@ function buildOutputFormat(tagConfig: TagConfig | null): string {
   "status": "nurturing" | "high_potential" | "active" | "dormant" | "committed",
   "action": "Reply Now" | "Schedule Call" | "Send Intro" | "Follow Up" | "Nurture" | "On Track",
   "urgency": "critical" | "high" | "medium" | "low",
-  "summary": "Relationship context: how met, their value/network, current state.",
-  "suggestedAction": "Specific, actionable next step for Shalin.",
+  "currentTopic": "What the MOST RECENT messages are about - be specific.",
+  "summary": "Partnership status and recent activity. Who reached out last, what's pending.",
+  "suggestedAction": "Specific next step based on the current conversation.",
   "risk": "none" | "low" | "medium" | "high",
   "riskReason": "if risk > low, explain why"
 }`;
@@ -324,8 +417,9 @@ function buildOutputFormat(tagConfig: TagConfig | null): string {
   "action": "Reply Now" | "Schedule Call" | "Send Resource" | "Check In" | "Escalate" | "On Track" | "Monitor",
   "urgency": "critical" | "high" | "medium" | "low",
   "status": "needs_owner" | "team_handling" | "resolved" | "at_risk" | "monitoring",
-  "summary": "1-2 sentence summary of current situation.",
-  "suggestedAction": "Actionable recommendation.",
+  "currentTopic": "What the recent messages are actually about - be specific.",
+  "summary": "Group status and active discussion topic. Who needs a response.",
+  "suggestedAction": "Specific action based on what's being discussed.",
   "churnRisk": "high" | "medium" | "low",
   "churnSignals": ["Specific signal with evidence"],
   "risk": "none" | "low" | "medium" | "high",
@@ -375,13 +469,16 @@ async function analyzeConversation(conversationId: string): Promise<AIAnalysisRe
         },
       },
       // Include notes for AI context - notes provide important business context
+      // Notes now have eventAt (when it happened) which we use for timeline ordering
       notes: {
         orderBy: { createdAt: 'desc' },
         take: 10,
         select: {
           type: true,
+          title: true,
           content: true,
-          createdAt: true,
+          eventAt: true,    // When the event actually happened (e.g., meeting 2 days ago)
+          createdAt: true,  // When the note was created in system
         },
       },
     },
@@ -428,20 +525,15 @@ async function analyzeConversation(conversationId: string): Promise<AIAnalysisRe
     return { ...m, senderName };
   });
 
-  const messagesText = formatMessagesForAnalysis(messagesWithNames, tagName);
-
-  // Format notes for context - notes are critical business context
-  let notesContext = '';
-  if (conv.notes && conv.notes.length > 0) {
-    notesContext = '\n📝 INTERNAL NOTES (context from team - consider in your analysis):\n';
-    conv.notes.forEach(note => {
-      const date = new Date(note.createdAt);
-      const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const typeLabel = note.type === 'meeting' ? '📅 Meeting' : note.type === 'call' ? '📞 Call' : '📝 Note';
-      notesContext += `  [${dateStr}] ${typeLabel}: ${note.content.slice(0, 200)}${note.content.length > 200 ? '...' : ''}\n`;
-    });
-    notesContext += '\n';
-  }
+  // Create UNIFIED TIMELINE: Merge messages and notes chronologically
+  // Notes appear at their eventAt time (when they happened), giving AI full context
+  // Example: [Dec 15] Message → [Dec 16] Meeting Note → [Dec 17] Message
+  const unifiedTimeline = formatUnifiedTimeline(
+    messagesWithNames,
+    conv.notes as NoteForAnalysis[],
+    tagName
+  );
+  const hasNotes = conv.notes && conv.notes.length > 0;
 
   // CROSS-CONVERSATION INTELLIGENCE: For group conversations, fetch Shalin's private chat context
   // This provides a complete picture - issues discussed in group may be resolved in private DMs
@@ -454,27 +546,43 @@ async function analyzeConversation(conversationId: string): Promise<AIAnalysisRe
   const outputFormat = buildOutputFormat(tagConfig);
 
   // Build context description for the prompt
-  const hasNotes = conv.notes && conv.notes.length > 0;
   const hasPrivateChat = privateChatContext.length > 0;
-  let contextDescription = 'the conversation above';
+  let contextDescription = 'the unified timeline above';
   if (hasNotes && hasPrivateChat) {
-    contextDescription = 'the GROUP CONVERSATION, INTERNAL NOTES, and PRIVATE CHAT CONTEXT above';
+    contextDescription = 'the UNIFIED TIMELINE (messages + notes) and PRIVATE CHAT CONTEXT above';
   } else if (hasNotes) {
-    contextDescription = 'the conversation above AND the internal notes';
+    contextDescription = 'the unified timeline above (includes both messages and internal notes in chronological order)';
   } else if (hasPrivateChat) {
-    contextDescription = 'the GROUP CONVERSATION and PRIVATE CHAT CONTEXT above';
+    contextDescription = 'the CONVERSATION and PRIVATE CHAT CONTEXT above';
   }
 
   // Build the analysis prompt
+  // UNIFIED TIMELINE: Messages and notes are merged chronologically
+  // Notes marked with 📝/📅/📞 are internal team observations at their actual event time
   const analysisPrompt = `${systemPrompt}
 
 ${teamMembers.length > 0 ? `TEAM MEMBERS (handle routine support): ${teamMembers.join(', ')}` : ''}
 OWNER (escalate important items to): ${ownerNames.join(', ')}
-${notesContext}${privateChatContext}
-=== GROUP CONVERSATION: ${conv.title || tagName} (${conv.type}) ===
-${messagesText}
+${privateChatContext}
+=== UNIFIED TIMELINE: ${conv.title || tagName} (${conv.type}) ===
+${hasNotes ? '(Timeline includes INTERNAL NOTES marked with 📝/📅/📞 - these are team observations/meeting summaries placed at when they happened)\n' : ''}
+${unifiedTimeline}
 
-IMPORTANT: When analyzing, consider ALL context provided above including any private chat messages between Shalin and the customer. Issues that appear unresolved in the group chat may have been addressed in private messages.
+CRITICAL ANALYSIS RULES:
+1. RECENCY FIRST: Focus on the MOST RECENT entries by timestamp. Summarize what's happening NOW.
+2. MESSAGE DIRECTION MARKERS:
+   - → = OUTBOUND (Shalin/us sent this) - ball is in THEIR court
+   - ← = INBOUND (they sent this) - ball is in OUR court, we need to respond!
+3. INTERNAL NOTES (📝/📅/📞): These are team observations placed at their actual event time. Use them to understand:
+   - Meeting outcomes and discussions that happened
+   - Call summaries and verbal commitments
+   - Internal context not visible in messages
+4. WHO'S WAITING: Look at the LAST message direction (ignore notes for this):
+   - If last message is ← (inbound): THEY are waiting for US → higher urgency, action needed
+   - If last message is → (outbound): WE are waiting for THEM → lower urgency, monitor/nurture
+5. DORMANT vs ACTIVE: Only mark as "dormant" if there's been NO response to OUR message for 7+ days. If THEY messaged recently, it's ACTIVE!
+6. RE-ENGAGEMENT: If a churned/quiet contact reaches out (← inbound after silence), that's a WIN-BACK SIGNAL - prioritize responding!
+7. BE SPECIFIC: Instead of generic "needs follow-up", say what specifically based on the actual conversation and notes.
 
 Based on ${contextDescription}, provide your analysis in this exact JSON format:
 ${outputFormat}
@@ -584,11 +692,13 @@ export async function POST(request: NextRequest) {
           // Build update data - MODULAR for any tag type
           const updateData: Record<string, unknown> = {
             aiStatus: analysis.status,
-            aiStatusReason: analysis.statusReason,
+            aiStatusReason: analysis.statusReason || null,
             aiStatusUpdatedAt: new Date(),
             aiSummary: analysis.summary,
             aiSummaryUpdatedAt: new Date(),
             aiSuggestedAction: analysis.suggestedAction,
+            // Store current conversation topic (what's being discussed NOW)
+            lastTopic: analysis.currentTopic || null,
             // Store AI's action recommendation (the primary badge value)
             aiAction: analysis.action || null,
             aiUrgencyLevel: analysis.urgency || 'medium',
@@ -740,37 +850,60 @@ export async function GET() {
       return true;
     });
 
-    // 3. URGENT STALENESS: Conversations with activity in last 7 days but analysis is stale
-    // These need re-analysis to ensure recommendations are current
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // 3. URGENT STALENESS: Conversations with RECENT activity that have stale analysis
+    // Much more aggressive - if there's activity in last 24 hours, analysis should be < 2 hours old
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
     const urgentConversations = await prisma.conversation.findMany({
       where: {
         isSyncDisabled: false,
         aiAnalyzing: false,
         // Has messages
         lastSyncedMessageId: { not: null },
-        // Has recent activity in last 7 days (not dormant)
-        lastMessageAt: { gt: sevenDaysAgo },
         // Has AI-enabled tag
         tags: {
           some: {
             tag: { aiEnabled: true }
           }
         },
+        // Either: recent activity (last 24h) OR analysis is very old
+        OR: [
+          {
+            // Recent activity (last 24 hours) - should have fresh analysis
+            lastMessageAt: { gt: oneDayAgo },
+            // Analysis is more than 2 hours old (stale for active conversations)
+            aiSummaryUpdatedAt: { lt: twoHoursAgo },
+          },
+          {
+            // Activity in last 7 days with stale (>24h) analysis
+            lastMessageAt: { gt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+            aiSummaryUpdatedAt: { lt: twentyFourHoursAgo },
+          },
+        ],
       },
       select: {
         id: true,
         title: true,
         lastSyncedMessageId: true,
         aiLastAnalyzedMsgId: true,
+        lastMessageAt: true,
+        aiSummaryUpdatedAt: true,
       },
-      take: 20,
+      take: 30,
     });
 
-    // Filter urgent ones that have new messages
-    const urgentNeedingReanalysis = urgentConversations.filter(
-      conv => conv.lastSyncedMessageId !== conv.aiLastAnalyzedMsgId
-    );
+    // Filter urgent ones that have new messages since last analysis
+    const urgentNeedingReanalysis = urgentConversations.filter(conv => {
+      // Check if there are new messages since last analysis
+      if (conv.lastSyncedMessageId === conv.aiLastAnalyzedMsgId) return false;
+
+      // Additional check: lastMessageAt should be after aiSummaryUpdatedAt
+      if (conv.lastMessageAt && conv.aiSummaryUpdatedAt) {
+        return new Date(conv.lastMessageAt) > new Date(conv.aiSummaryUpdatedAt);
+      }
+      return true;
+    });
 
     return NextResponse.json({
       cleanedUp: staleAnalyzing.count,

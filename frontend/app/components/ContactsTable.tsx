@@ -181,6 +181,50 @@ function getCleanSummary(statusReason: string | null): string {
 }
 
 // ============================================================================
+// FRESHNESS INDICATOR - Show when AI analysis is stale
+// ============================================================================
+
+interface FreshnessInfo {
+  label: string;
+  isStale: boolean;  // More than 2 hours old when there are new messages
+  isVeryStale: boolean; // More than 24 hours old
+  hoursAgo: number;
+}
+
+function getAnalysisFreshness(
+  aiSummaryUpdatedAt: string | null,
+  lastInteraction: string | null
+): FreshnessInfo {
+  if (!aiSummaryUpdatedAt) {
+    return { label: 'Not analyzed', isStale: true, isVeryStale: true, hoursAgo: -1 };
+  }
+
+  const analysisTime = new Date(aiSummaryUpdatedAt).getTime();
+  const lastMsgTime = lastInteraction ? new Date(lastInteraction).getTime() : 0;
+  const now = Date.now();
+
+  const hoursAgo = Math.floor((now - analysisTime) / (1000 * 60 * 60));
+  const hasNewMessages = lastMsgTime > analysisTime;
+
+  // Very stale: analysis is 24+ hours old
+  const isVeryStale = hoursAgo >= 24;
+  // Stale: analysis is 2+ hours old AND there are new messages
+  const isStale = (hoursAgo >= 2 && hasNewMessages) || isVeryStale;
+
+  let label: string;
+  if (hoursAgo < 1) {
+    label = 'Just now';
+  } else if (hoursAgo < 24) {
+    label = `${hoursAgo}h ago`;
+  } else {
+    const daysAgo = Math.floor(hoursAgo / 24);
+    label = `${daysAgo}d ago`;
+  }
+
+  return { label, isStale, isVeryStale, hoursAgo };
+}
+
+// ============================================================================
 // LINEAR DESIGN SYSTEM - Urgency Colors
 // Red = Critical/Urgent, Orange = Warning, Blue = Active, Green = Good, Gray = Neutral
 // ============================================================================
@@ -2882,35 +2926,58 @@ function ContactRow({ contact, onClick, typeFilter, showPhoneColumn, showMembers
       )}
 
       {/* AI Summary - wider for readability */}
-      {showAiColumns && (
-        <td style={{ ...tdStyle, width: '320px' }}>
-          {contact.aiAnalyzing ? (
-            // Analyzing state - show shimmer placeholder
-            <div className="ai-shimmer" style={{
-              height: '32px',
-              borderRadius: '4px',
-              background: 'linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%)',
-              backgroundSize: '200% 100%',
-            }} />
-          ) : contact.aiSummary ? (
-            // Done - show summary
-            <span style={{
-              fontSize: '12px',
-              color: 'var(--text-primary)',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              lineHeight: '1.4',
-            }}>
-              {contact.aiSummary}
-            </span>
-          ) : (
-            <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
-          )}
-        </td>
-      )}
+      {showAiColumns && (() => {
+        const freshness = getAnalysisFreshness(contact.aiSummaryUpdatedAt, contact.lastInteraction);
+        return (
+          <td style={{ ...tdStyle, width: '320px' }}>
+            {contact.aiAnalyzing ? (
+              // Analyzing state - show shimmer placeholder
+              <div className="ai-shimmer" style={{
+                height: '32px',
+                borderRadius: '4px',
+                background: 'linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%)',
+                backgroundSize: '200% 100%',
+              }} />
+            ) : contact.aiSummary ? (
+              // Done - show summary with freshness indicator
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{
+                  fontSize: '12px',
+                  color: 'var(--text-primary)',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  lineHeight: '1.4',
+                }}>
+                  {contact.aiSummary}
+                </span>
+                {/* Freshness indicator - subtle warning if stale */}
+                {freshness.isStale && (
+                  <span style={{
+                    fontSize: '10px',
+                    color: freshness.isVeryStale ? '#F97316' : 'var(--text-quaternary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '3px',
+                  }}>
+                    {freshness.isVeryStale && (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="12,6 12,12 16,14" />
+                      </svg>
+                    )}
+                    Updated {freshness.label}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span style={{ fontSize: '12px', color: 'var(--text-quaternary)' }}>—</span>
+            )}
+          </td>
+        );
+      })()}
 
       {/* Last Active - shows "Online" if online, otherwise relative time */}
       <td style={tdStyle}>

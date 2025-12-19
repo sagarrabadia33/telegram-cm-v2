@@ -6,10 +6,24 @@ interface ConversationSummaryProps {
   conversationId: string;
   conversationTitle?: string;
   defaultExpanded?: boolean;
-  refreshTrigger?: number; // Increment to trigger a refetch (e.g., after sync completes)
+  refreshTrigger?: number;
 }
 
 interface SummaryData {
+  // Intelligent analysis fields (primary)
+  aiSummary: string | null;
+  aiStatus: string | null;
+  aiAction: string | null;
+  aiUrgencyLevel: string | null;
+  aiSuggestedAction: string | null;
+  aiStatusReason: string | null;
+  aiHealthScore: number | null;
+  aiChurnRisk: string | null;
+  aiSentiment: string | null;
+  aiAnalyzedTagName: string | null;
+  aiSummaryUpdatedAt: string | null;
+  hasAITag: boolean;
+  // Legacy fields (fallback)
   summary: string;
   sentiment: "positive" | "neutral" | "negative";
   intentLevel: "high" | "medium" | "low";
@@ -18,6 +32,55 @@ interface SummaryData {
   summaryGeneratedAt: string;
   newMessagesSinceGenerated?: number;
 }
+
+// Status badge colors and labels
+const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: string }> = {
+  // Customer statuses
+  healthy: { label: "Healthy", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  at_risk: { label: "At Risk", color: "#F59E0B", bgColor: "rgba(245, 158, 11, 0.12)" },
+  needs_attention: { label: "Needs Attention", color: "#EF4444", bgColor: "rgba(239, 68, 68, 0.12)" },
+  team_handling: { label: "Team Handling", color: "#3B82F6", bgColor: "rgba(59, 130, 246, 0.12)" },
+  needs_owner: { label: "Needs Owner", color: "#8B5CF6", bgColor: "rgba(139, 92, 246, 0.12)" },
+  // Partner statuses
+  nurturing: { label: "Nurturing", color: "#3B82F6", bgColor: "rgba(59, 130, 246, 0.12)" },
+  high_potential: { label: "High Potential", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  active: { label: "Active", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  committed: { label: "Committed", color: "#8B5CF6", bgColor: "rgba(139, 92, 246, 0.12)" },
+  dormant: { label: "Dormant", color: "#6B7280", bgColor: "rgba(107, 114, 128, 0.12)" },
+  // Prospect statuses
+  new_lead: { label: "New Lead", color: "#3B82F6", bgColor: "rgba(59, 130, 246, 0.12)" },
+  qualifying: { label: "Qualifying", color: "#F59E0B", bgColor: "rgba(245, 158, 11, 0.12)" },
+  demo_scheduled: { label: "Demo Scheduled", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  proposal: { label: "Proposal", color: "#8B5CF6", bgColor: "rgba(139, 92, 246, 0.12)" },
+  negotiating: { label: "Negotiating", color: "#EC4899", bgColor: "rgba(236, 72, 153, 0.12)" },
+  closed_won: { label: "Closed Won", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  closed_lost: { label: "Closed Lost", color: "#EF4444", bgColor: "rgba(239, 68, 68, 0.12)" },
+  // Churned statuses
+  winback_opportunity: { label: "Winback Opportunity", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  long_shot: { label: "Long Shot", color: "#F59E0B", bgColor: "rgba(245, 158, 11, 0.12)" },
+  lost_cause: { label: "Lost Cause", color: "#EF4444", bgColor: "rgba(239, 68, 68, 0.12)" },
+};
+
+// Action badge colors
+const ACTION_CONFIG: Record<string, { label: string; color: string; bgColor: string }> = {
+  "Reply Now": { label: "Reply Now", color: "#EF4444", bgColor: "rgba(239, 68, 68, 0.12)" },
+  "Schedule Call": { label: "Schedule Call", color: "#3B82F6", bgColor: "rgba(59, 130, 246, 0.12)" },
+  "Send Intro": { label: "Send Intro", color: "#8B5CF6", bgColor: "rgba(139, 92, 246, 0.12)" },
+  "Follow Up": { label: "Follow Up", color: "#F59E0B", bgColor: "rgba(245, 158, 11, 0.12)" },
+  "Nurture": { label: "Nurture", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  "On Track": { label: "On Track", color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+  "Monitor": { label: "Monitor", color: "#6B7280", bgColor: "rgba(107, 114, 128, 0.12)" },
+  "Escalate": { label: "Escalate", color: "#EF4444", bgColor: "rgba(239, 68, 68, 0.12)" },
+  "Personal Outreach": { label: "Personal Outreach", color: "#EC4899", bgColor: "rgba(236, 72, 153, 0.12)" },
+};
+
+// Urgency colors
+const URGENCY_CONFIG: Record<string, { color: string; bgColor: string }> = {
+  critical: { color: "#EF4444", bgColor: "rgba(239, 68, 68, 0.12)" },
+  high: { color: "#F59E0B", bgColor: "rgba(245, 158, 11, 0.12)" },
+  medium: { color: "#3B82F6", bgColor: "rgba(59, 130, 246, 0.12)" },
+  low: { color: "#22C55E", bgColor: "rgba(34, 197, 94, 0.12)" },
+};
 
 export function ConversationSummary({
   conversationId,
@@ -97,7 +160,10 @@ export function ConversationSummary({
   const newMessages = summaryData?.newMessagesSinceGenerated || 0;
   const isOutdated = newMessages >= 5;
 
-  // Loading skeleton - Linear shimmer style
+  // Determine if we have intelligent analysis
+  const hasIntelligentAnalysis = summaryData?.aiSummary || summaryData?.aiStatus;
+
+  // Loading skeleton
   if (loading && !summaryData) {
     return (
       <div style={{
@@ -139,19 +205,19 @@ export function ConversationSummary({
               fontWeight: 'var(--font-medium)',
               color: 'var(--text-secondary)',
             }}>
-              AI Summary
+              AI Intelligence
             </span>
             <span style={{
               fontSize: 'var(--text-xs)',
               color: 'var(--text-quaternary)',
             }}>
-              Not generated
+              Not analyzed
             </span>
           </div>
           <GenerateButton
             onClick={generateSummary}
             isLoading={regenerating}
-            label="Generate"
+            label="Analyze"
           />
         </div>
         {error && <ErrorMessage message={error} />}
@@ -185,7 +251,7 @@ export function ConversationSummary({
           textAlign: 'left',
         }}
       >
-        {/* Left: Icon + Title + Time */}
+        {/* Left: Icon + Title + Badges */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', minWidth: 0, flex: 1 }}>
           <AIGradientIcon />
 
@@ -194,35 +260,59 @@ export function ConversationSummary({
             fontWeight: 'var(--font-medium)',
             color: 'var(--text-primary)',
           }}>
-            AI Summary
+            AI Intelligence
           </span>
 
-          <span style={{
-            fontSize: '11px',
-            color: 'var(--text-quaternary)',
-            fontFeatureSettings: '"tnum"',
-          }}>
-            {formatTimeAgo(summaryData.summaryGeneratedAt)}
-          </span>
+          {/* Tag name */}
+          {summaryData.aiAnalyzedTagName && (
+            <span style={{
+              fontSize: '10px',
+              color: 'var(--text-quaternary)',
+              background: 'var(--bg-tertiary)',
+              padding: '2px 6px',
+              borderRadius: 'var(--radius-sm)',
+            }}>
+              {summaryData.aiAnalyzedTagName}
+            </span>
+          )}
 
-          {/* Inline sentiment + intent badges - visible in collapsed state */}
-          {!isExpanded && (
+          {/* Status + Action badges - visible in collapsed state */}
+          {!isExpanded && hasIntelligentAnalysis && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1-5)', marginLeft: 'var(--space-1)' }}>
+              {summaryData.aiStatus && (
+                <StatusBadge status={summaryData.aiStatus} />
+              )}
+              {summaryData.aiAction && (
+                <ActionBadge action={summaryData.aiAction} />
+              )}
+              {summaryData.aiUrgencyLevel && (
+                <UrgencyDot urgency={summaryData.aiUrgencyLevel} />
+              )}
+            </div>
+          )}
+
+          {/* Legacy badges for non-AI-tagged conversations */}
+          {!isExpanded && !hasIntelligentAnalysis && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1-5)', marginLeft: 'var(--space-1)' }}>
               <MicroBadge
                 label={summaryData.sentiment}
                 variant={summaryData.sentiment === 'positive' ? 'success' : summaryData.sentiment === 'negative' ? 'error' : 'neutral'}
               />
-              <MicroBadge
-                label={summaryData.intentLevel}
-                variant={summaryData.intentLevel === 'high' ? 'accent' : summaryData.intentLevel === 'medium' ? 'info' : 'neutral'}
-              />
             </div>
           )}
         </div>
 
-        {/* Right: Update button + Chevron */}
+        {/* Right: Time + Update button + Chevron */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          {/* New messages indicator with update action */}
+          <span style={{
+            fontSize: '11px',
+            color: 'var(--text-quaternary)',
+            fontFeatureSettings: '"tnum"',
+          }}>
+            {summaryData.summaryGeneratedAt && formatTimeAgo(summaryData.summaryGeneratedAt)}
+          </span>
+
+          {/* New messages indicator */}
           {newMessages > 0 ? (
             <UpdateBadge
               count={newMessages}
@@ -231,7 +321,6 @@ export function ConversationSummary({
               onClick={generateSummary}
             />
           ) : (
-            /* Refresh button - always rendered, opacity reveals on hover */
             <RefreshButton
               onClick={generateSummary}
               isLoading={regenerating}
@@ -243,11 +332,11 @@ export function ConversationSummary({
         </div>
       </button>
 
-      {/* Collapsed preview - one line summary */}
+      {/* Collapsed preview */}
       {!isExpanded && (
         <div style={{
           padding: '0 var(--space-4) var(--space-3)',
-          paddingLeft: 'calc(var(--space-4) + 20px + var(--space-3))', // Align with title
+          paddingLeft: 'calc(var(--space-4) + 20px + var(--space-3))',
         }}>
           <p style={{
             fontSize: 'var(--text-sm)',
@@ -258,7 +347,7 @@ export function ConversationSummary({
             whiteSpace: 'nowrap',
             margin: 0,
           }}>
-            {summaryData.summary}
+            {summaryData.aiSummary || summaryData.summary}
           </p>
         </div>
       )}
@@ -267,102 +356,119 @@ export function ConversationSummary({
       {isExpanded && (
         <div style={{
           padding: '0 var(--space-4) var(--space-4)',
-          paddingLeft: 'calc(var(--space-4) + 20px + var(--space-3))', // Align with title
+          paddingLeft: 'calc(var(--space-4) + 20px + var(--space-3))',
         }}>
-          {/* Full summary text */}
+          {/* Status + Action + Urgency badges */}
+          {hasIntelligentAnalysis && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              marginBottom: 'var(--space-3)',
+            }}>
+              {summaryData.aiStatus && (
+                <StatusBadge status={summaryData.aiStatus} size="large" />
+              )}
+              {summaryData.aiAction && (
+                <ActionBadge action={summaryData.aiAction} size="large" />
+              )}
+              {summaryData.aiUrgencyLevel && (
+                <UrgencyBadge urgency={summaryData.aiUrgencyLevel} />
+              )}
+              {summaryData.aiHealthScore && (
+                <HealthBadge score={summaryData.aiHealthScore} />
+              )}
+            </div>
+          )}
+
+          {/* Summary text */}
           <p style={{
             fontSize: 'var(--text-sm)',
             lineHeight: '1.6',
             color: 'var(--text-secondary)',
-            margin: '0 0 var(--space-4) 0',
+            margin: '0 0 var(--space-3) 0',
           }}>
-            {summaryData.summary}
+            {summaryData.aiSummary || summaryData.summary}
           </p>
 
-          {/* Key insights grid */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: summaryData.keyPoints?.length > 0 ? '1fr 1fr' : '1fr',
-            gap: 'var(--space-4)',
-          }}>
-            {/* Current Topic */}
-            {summaryData.lastTopic && (
-              <InsightSection
-                icon={<TopicIcon />}
-                label="Current Topic"
-                color="var(--info)"
-              >
-                <p style={{
-                  fontSize: 'var(--text-sm)',
-                  lineHeight: '1.5',
-                  color: 'var(--text-secondary)',
-                  margin: 0,
-                }}>
-                  {summaryData.lastTopic}
-                </p>
-              </InsightSection>
-            )}
+          {/* Next Step / Suggested Action */}
+          {summaryData.aiSuggestedAction && (
+            <div style={{
+              background: 'rgba(59, 130, 246, 0.06)',
+              borderRadius: 'var(--radius-md)',
+              padding: 'var(--space-2) var(--space-3)',
+              border: '1px solid rgba(59, 130, 246, 0.12)',
+              marginBottom: 'var(--space-3)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
+                <LightbulbIcon />
+                <div>
+                  <div style={{
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    color: 'var(--text-quaternary)',
+                    marginBottom: '2px',
+                  }}>
+                    Next Step
+                  </div>
+                  <div style={{
+                    fontSize: 'var(--text-sm)',
+                    lineHeight: '1.4',
+                    color: 'var(--text-primary)',
+                  }}>
+                    {summaryData.aiSuggestedAction}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-            {/* Key Points */}
-            {summaryData.keyPoints && summaryData.keyPoints.length > 0 && (
-              <InsightSection
-                icon={<KeyPointsIcon />}
-                label="Key Points"
-                color="var(--success)"
-              >
-                <ul style={{
-                  listStyle: 'none',
-                  margin: 0,
-                  padding: 0,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 'var(--space-1)',
-                }}>
-                  {summaryData.keyPoints.slice(0, 3).map((point, i) => (
-                    <li key={i} style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: 'var(--space-2)',
-                      fontSize: 'var(--text-sm)',
-                      lineHeight: '1.4',
-                      color: 'var(--text-secondary)',
+          {/* Legacy key points (for non-AI-tagged conversations) */}
+          {!hasIntelligentAnalysis && summaryData.keyPoints && summaryData.keyPoints.length > 0 && (
+            <div style={{ marginBottom: 'var(--space-3)' }}>
+              <div style={{
+                fontSize: '10px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: 'var(--text-quaternary)',
+                marginBottom: 'var(--space-2)',
+              }}>
+                Key Points
+              </div>
+              <ul style={{
+                listStyle: 'none',
+                margin: 0,
+                padding: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-1)',
+              }}>
+                {summaryData.keyPoints.slice(0, 3).map((point, i) => (
+                  <li key={i} style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 'var(--space-2)',
+                    fontSize: 'var(--text-sm)',
+                    lineHeight: '1.4',
+                    color: 'var(--text-secondary)',
+                  }}>
+                    <span style={{
+                      color: 'var(--text-quaternary)',
+                      fontSize: '11px',
+                      fontWeight: 'var(--font-medium)',
+                      minWidth: '14px',
                     }}>
-                      <span style={{
-                        color: 'var(--text-quaternary)',
-                        fontSize: '11px',
-                        fontWeight: 'var(--font-medium)',
-                        minWidth: '14px',
-                      }}>
-                        {i + 1}.
-                      </span>
-                      <span>{point}</span>
-                    </li>
-                  ))}
-                </ul>
-              </InsightSection>
-            )}
-          </div>
-
-          {/* Footer: Status badges only - refresh action is in the header */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-            marginTop: 'var(--space-4)',
-            paddingTop: 'var(--space-3)',
-            borderTop: '1px solid var(--border-subtle)',
-          }}>
-            <StatusBadge
-              label={`${summaryData.sentiment} sentiment`}
-              variant={summaryData.sentiment === 'positive' ? 'success' : summaryData.sentiment === 'negative' ? 'error' : 'neutral'}
-              icon={<SentimentIcon sentiment={summaryData.sentiment} />}
-            />
-            <StatusBadge
-              label={`${summaryData.intentLevel} intent`}
-              variant={summaryData.intentLevel === 'high' ? 'accent' : summaryData.intentLevel === 'medium' ? 'info' : 'neutral'}
-              icon={<IntentIcon level={summaryData.intentLevel} />}
-            />
-          </div>
+                      {i + 1}.
+                    </span>
+                    <span>{point}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {error && <ErrorMessage message={error} />}
         </div>
@@ -396,44 +502,122 @@ function SkeletonLine({ width }: { width: string }) {
 }
 
 // ============================================
-// Insight Section
+// Badge Components
 // ============================================
 
-interface InsightSectionProps {
-  icon: React.ReactNode;
-  label: string;
-  color: string;
-  children: React.ReactNode;
-}
+function StatusBadge({ status, size = 'small' }: { status: string; size?: 'small' | 'large' }) {
+  const config = STATUS_CONFIG[status] || { label: status, color: 'var(--text-tertiary)', bgColor: 'var(--bg-tertiary)' };
+  const padding = size === 'large' ? '4px 8px' : '2px 6px';
+  const fontSize = size === 'large' ? '11px' : '10px';
 
-function InsightSection({ icon, label, color, children }: InsightSectionProps) {
   return (
-    <div>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 'var(--space-1-5)',
-        marginBottom: 'var(--space-2)',
-      }}>
-        <span style={{ color, display: 'flex' }}>{icon}</span>
-        <span style={{
-          fontSize: '10px',
-          fontWeight: 'var(--font-semibold)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          color: 'var(--text-quaternary)',
-        }}>
-          {label}
-        </span>
-      </div>
-      {children}
-    </div>
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding,
+      fontSize,
+      fontWeight: 500,
+      borderRadius: 'var(--radius-sm)',
+      background: config.bgColor,
+      color: config.color,
+      textTransform: 'capitalize',
+    }}>
+      <span style={{
+        width: '5px',
+        height: '5px',
+        borderRadius: 'var(--radius-full)',
+        background: config.color,
+      }} />
+      {config.label}
+    </span>
   );
 }
 
-// ============================================
-// Badges & Buttons
-// ============================================
+function ActionBadge({ action, size = 'small' }: { action: string; size?: 'small' | 'large' }) {
+  const config = ACTION_CONFIG[action] || { label: action, color: 'var(--text-tertiary)', bgColor: 'var(--bg-tertiary)' };
+  const padding = size === 'large' ? '4px 8px' : '2px 6px';
+  const fontSize = size === 'large' ? '11px' : '10px';
+
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding,
+      fontSize,
+      fontWeight: 500,
+      borderRadius: 'var(--radius-sm)',
+      background: config.bgColor,
+      color: config.color,
+    }}>
+      {config.label}
+    </span>
+  );
+}
+
+function UrgencyDot({ urgency }: { urgency: string }) {
+  const config = URGENCY_CONFIG[urgency] || URGENCY_CONFIG.medium;
+  return (
+    <span
+      title={`${urgency} urgency`}
+      style={{
+        width: '8px',
+        height: '8px',
+        borderRadius: 'var(--radius-full)',
+        background: config.color,
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
+function UrgencyBadge({ urgency }: { urgency: string }) {
+  const config = URGENCY_CONFIG[urgency] || URGENCY_CONFIG.medium;
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '4px 8px',
+      fontSize: '11px',
+      fontWeight: 500,
+      borderRadius: 'var(--radius-sm)',
+      background: config.bgColor,
+      color: config.color,
+      textTransform: 'capitalize',
+    }}>
+      <span style={{
+        width: '6px',
+        height: '6px',
+        borderRadius: 'var(--radius-full)',
+        background: config.color,
+      }} />
+      {urgency}
+    </span>
+  );
+}
+
+function HealthBadge({ score }: { score: number }) {
+  const color = score >= 80 ? '#22C55E' : score >= 60 ? '#F59E0B' : '#EF4444';
+  const bgColor = score >= 80 ? 'rgba(34, 197, 94, 0.12)' : score >= 60 ? 'rgba(245, 158, 11, 0.12)' : 'rgba(239, 68, 68, 0.12)';
+
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '4px 8px',
+      fontSize: '11px',
+      fontWeight: 500,
+      borderRadius: 'var(--radius-sm)',
+      background: bgColor,
+      color,
+    }}>
+      <HeartIcon />
+      {score}%
+    </span>
+  );
+}
 
 function MicroBadge({ label, variant }: { label: string; variant: 'success' | 'error' | 'neutral' | 'accent' | 'info' }) {
   const colors = {
@@ -468,33 +652,9 @@ function MicroBadge({ label, variant }: { label: string; variant: 'success' | 'e
   );
 }
 
-function StatusBadge({ label, variant, icon }: { label: string; variant: 'success' | 'error' | 'neutral' | 'accent' | 'info'; icon: React.ReactNode }) {
-  const colors = {
-    success: { bg: 'rgba(34, 197, 94, 0.1)', text: '#22C55E' },
-    error: { bg: 'rgba(239, 68, 68, 0.1)', text: '#EF4444' },
-    accent: { bg: 'var(--accent-subtle)', text: 'var(--accent-primary)' },
-    info: { bg: 'rgba(59, 130, 246, 0.1)', text: '#3B82F6' },
-    neutral: { bg: 'var(--bg-tertiary)', text: 'var(--text-tertiary)' },
-  };
-
-  return (
-    <span style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 'var(--space-1)',
-      padding: '4px 8px',
-      fontSize: '11px',
-      fontWeight: 'var(--font-medium)',
-      textTransform: 'capitalize',
-      borderRadius: 'var(--radius-md)',
-      background: colors[variant].bg,
-      color: colors[variant].text,
-    }}>
-      {icon}
-      {label}
-    </span>
-  );
-}
+// ============================================
+// Button Components
+// ============================================
 
 function GenerateButton({ onClick, isLoading, label }: { onClick: (e?: React.MouseEvent) => void; isLoading: boolean; label: string }) {
   const [isHovered, setIsHovered] = useState(false);
@@ -522,7 +682,7 @@ function GenerateButton({ onClick, isLoading, label }: { onClick: (e?: React.Mou
       }}
     >
       {isLoading ? <LoadingSpinner size={12} color="white" /> : <SparkleIcon size={12} />}
-      <span>{isLoading ? 'Generating...' : label}</span>
+      <span>{isLoading ? 'Analyzing...' : label}</span>
     </button>
   );
 }
@@ -618,10 +778,8 @@ function RefreshButton({ onClick, isLoading, isVisible = true }: { onClick: (e?:
         border: 'none',
         borderRadius: '4px',
         cursor: isLoading ? 'wait' : 'pointer',
-        // Use opacity for reveal - always renders, no layout shift
         opacity: isLoading ? 0.5 : isVisible ? 1 : 0,
         transition: 'opacity 120ms ease, color 120ms ease',
-        // Prevent interaction when hidden
         pointerEvents: isVisible || isLoading ? 'auto' : 'none',
         textDecoration: isHovered && !isLoading ? 'underline' : 'none',
         textUnderlineOffset: '2px',
@@ -636,48 +794,6 @@ function RefreshButton({ onClick, isLoading, isVisible = true }: { onClick: (e?:
         <span>Refresh</span>
       )}
     </span>
-  );
-}
-
-function TextLinkButton({ onClick, isLoading, label }: { onClick: (e?: React.MouseEvent) => void; isLoading: boolean; label: string }) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <button
-      onClick={onClick}
-      disabled={isLoading}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '4px',
-        padding: '2px 6px',
-        fontSize: '11px',
-        fontWeight: 500,
-        color: isLoading
-          ? 'var(--text-tertiary)'
-          : isHovered
-          ? 'var(--accent-primary)'
-          : 'var(--text-tertiary)',
-        background: 'transparent',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: isLoading ? 'wait' : 'pointer',
-        transition: 'color 120ms ease',
-        textDecoration: isHovered && !isLoading ? 'underline' : 'none',
-        textUnderlineOffset: '2px',
-      }}
-    >
-      {isLoading ? (
-        <>
-          <LoadingSpinner size={10} />
-          <span>Updating...</span>
-        </>
-      ) : (
-        <span>{label}</span>
-      )}
-    </button>
   );
 }
 
@@ -738,22 +854,20 @@ function SparkleIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-function RefreshIcon({ size = 14 }: { size?: number }) {
+function LightbulbIcon() {
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <path
-        d="M2.5 8a5.5 5.5 0 1 1 1.288 3.546"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      <path
-        d="M2.5 12V8.5H6"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18h6" />
+      <path d="M10 22h4" />
+      <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
+    </svg>
+  );
+}
+
+function HeartIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
     </svg>
   );
 }
@@ -810,65 +924,6 @@ function LoadingSpinner({ size = 14, color }: { size?: number; color?: string })
         strokeWidth="1.5"
         strokeLinecap="round"
       />
-    </svg>
-  );
-}
-
-function TopicIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <circle cx="6" cy="6" r="2" fill="currentColor" />
-      <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.2" strokeDasharray="2 2" />
-    </svg>
-  );
-}
-
-function KeyPointsIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <path d="M2 3h8M2 6h6M2 9h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function SentimentIcon({ sentiment }: { sentiment: 'positive' | 'neutral' | 'negative' }) {
-  if (sentiment === 'positive') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.2" />
-        <path d="M4 7c0 0 1 1.5 2 1.5s2-1.5 2-1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-        <circle cx="4.5" cy="5" r="0.5" fill="currentColor" />
-        <circle cx="7.5" cy="5" r="0.5" fill="currentColor" />
-      </svg>
-    );
-  }
-  if (sentiment === 'negative') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.2" />
-        <path d="M4 8c0 0 1-1 2-1s2 1 2 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-        <circle cx="4.5" cy="5" r="0.5" fill="currentColor" />
-        <circle cx="7.5" cy="5" r="0.5" fill="currentColor" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.2" />
-      <path d="M4 7h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      <circle cx="4.5" cy="5" r="0.5" fill="currentColor" />
-      <circle cx="7.5" cy="5" r="0.5" fill="currentColor" />
-    </svg>
-  );
-}
-
-function IntentIcon({ level }: { level: 'high' | 'medium' | 'low' }) {
-  const bars = level === 'high' ? 3 : level === 'medium' ? 2 : 1;
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <rect x="2" y="8" width="2" height="2" rx="0.5" fill={bars >= 1 ? 'currentColor' : 'currentColor'} opacity={bars >= 1 ? 1 : 0.3} />
-      <rect x="5" y="5" width="2" height="5" rx="0.5" fill={bars >= 2 ? 'currentColor' : 'currentColor'} opacity={bars >= 2 ? 1 : 0.3} />
-      <rect x="8" y="2" width="2" height="8" rx="0.5" fill={bars >= 3 ? 'currentColor' : 'currentColor'} opacity={bars >= 3 ? 1 : 0.3} />
     </svg>
   );
 }

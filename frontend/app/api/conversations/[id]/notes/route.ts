@@ -88,10 +88,14 @@ export async function GET(
       );
     }
 
-    // Get all notes for this conversation
+    // Get all notes for this conversation, ordered by event date (when it happened)
+    // Falls back to createdAt for notes without eventAt
     const notes = await prisma.conversationNote.findMany({
       where: { conversationId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [
+        { eventAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
     });
 
     // If no notes exist, check for legacy notes in metadata and migrate them

@@ -204,7 +204,7 @@ export async function POST(
       );
     }
 
-    // Get conversation with messages and notes
+    // Get conversation with messages, notes, and tags
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
       select: {
@@ -215,6 +215,13 @@ export async function POST(
         summary: true,
         sentiment: true,
         keyPoints: true,
+        // AI analysis fields for context
+        aiStatus: true,
+        aiAction: true,
+        aiSummary: true,
+        aiSuggestedAction: true,
+        aiUrgencyLevel: true,
+        lastTopic: true,
         contact: {
           select: {
             firstName: true,
@@ -226,8 +233,20 @@ export async function POST(
           },
         },
         notes: {
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ eventAt: 'desc' }, { createdAt: 'desc' }], // Order by when event happened
           take: 50, // Latest 50 notes
+        },
+        // Tags with their AI context prompts
+        tags: {
+          include: {
+            tag: {
+              select: {
+                name: true,
+                aiEnabled: true,
+                aiSystemPrompt: true,
+              },
+            },
+          },
         },
       },
     });
@@ -263,22 +282,6 @@ export async function POST(
       },
     });
 
-    // Format messages for context
-    const formattedMessages = messages
-      .filter(m => m.body && m.body.trim().length > 0)
-      .reverse() // Chronological order
-      .map((m) => {
-        const isOutgoing = m.direction === 'outbound';
-        const sender = isOutgoing
-          ? 'You'
-          : (m.contact?.displayName ||
-             [m.contact?.firstName, m.contact?.lastName].filter(Boolean).join(' ') ||
-             'Contact');
-        const date = new Date(m.sentAt).toLocaleString();
-        return `[${date}] ${sender}: ${m.body}`;
-      })
-      .join('\n');
-
     // Extract notes from metadata (legacy) and new timeline notes
     const metadata = conversation.metadata as Record<string, unknown> | null;
     const legacyNotes = metadata?.notes as string | null;
@@ -302,68 +305,50 @@ export async function POST(
       if (contact.primaryPhone) contextSections.push(`Phone: ${contact.primaryPhone}`);
     }
 
-    // Notes context - include both legacy and timeline notes
-    const hasNotes = legacyNotes || contactNotes || timelineNotes.length > 0;
-    if (hasNotes) {
-      contextSections.push('\n--- BACKGROUND NOTES ---');
+    // Tags and relationship type context
+    const tags = conversation.tags || [];
+    if (tags.length > 0) {
+      const tagNames = tags.map(t => t.tag.name);
+      contextSections.push(`\nRELATIONSHIP TAGS: ${tagNames.join(', ')}`);
 
-      // Timeline notes (new format) - chronological order with timestamps
-      if (timelineNotes.length > 0) {
-        contextSections.push('\nTimeline Notes:');
-        // Reverse to show oldest first (chronological)
-        const chronologicalNotes = [...timelineNotes].reverse();
+      // Add tag-specific context for the AI to understand relationship type
+      const tagContextMap: Record<string, string> = {
+        'Churned': 'This is a CHURNED customer. Focus on win-back opportunities, understanding why they left, and what might bring them back.',
+        'Customer': 'This is an existing CUSTOMER. Focus on relationship health, support issues, expansion opportunities, and retention.',
+        'Customer Groups': 'This is a CUSTOMER GROUP chat. Focus on active support issues, key stakeholders, and team communication dynamics.',
+        'Partner': 'This is a PARTNER relationship. Focus on referral potential, network value, and mutual value exchange.',
+        'Prospect': 'This is a PROSPECT (sales opportunity). Focus on deal stage, objections, and moving them toward conversion.',
+      };
 
-        // Track files to extract content from
-        const fileContentsToExtract: { storageKey: string; fileName: string }[] = [];
-
-        for (const note of chronologicalNotes) {
-          const date = new Date(note.createdAt);
-          const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-          const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-          const typeLabel = note.type.charAt(0).toUpperCase() + note.type.slice(1);
-          const titlePart = note.title ? ` "${note.title}"` : '';
-          const filePart = note.fileName ? ` [File: ${note.fileName}]` : '';
-          contextSections.push(`[${dateStr} ${timeStr}] ${typeLabel}${titlePart}${filePart}: ${note.content}`);
-
-          // Collect files for content extraction
-          if (note.fileUrl && note.fileName) {
-            fileContentsToExtract.push({
-              storageKey: note.fileUrl,
-              fileName: note.fileName,
-            });
-          }
+      for (const tagName of tagNames) {
+        if (tagContextMap[tagName]) {
+          contextSections.push(`TAG CONTEXT: ${tagContextMap[tagName]}`);
         }
-
-        // Extract file contents and add to context
-        if (fileContentsToExtract.length > 0) {
-          contextSections.push('\n--- ATTACHED FILE CONTENTS ---');
-          contextSections.push('(The following are the actual contents of files attached to notes)\n');
-
-          for (const file of fileContentsToExtract) {
-            const fileContent = await extractFileContent(file.storageKey);
-            if (fileContent) {
-              contextSections.push(fileContent);
-              contextSections.push(''); // Empty line between files
-            } else {
-              contextSections.push(`[${file.fileName}] (Binary or unsupported file format - content not available)`);
-            }
-          }
-        }
-      }
-
-      // Legacy notes (old format)
-      if (legacyNotes && timelineNotes.length === 0) {
-        contextSections.push(`Legacy Notes: ${legacyNotes}`);
-      }
-
-      // Contact notes
-      if (contactNotes) {
-        contextSections.push(`Contact Notes: ${contactNotes}`);
       }
     }
 
-    // Existing AI summary if available
-    if (conversation.summary) {
+    // Legacy/contact notes if any (separate from timeline)
+    if (legacyNotes || contactNotes) {
+      contextSections.push('\n--- BACKGROUND NOTES ---');
+      if (legacyNotes) contextSections.push(`Legacy Notes: ${legacyNotes}`);
+      if (contactNotes) contextSections.push(`Contact Notes: ${contactNotes}`);
+    }
+
+    // Current AI analysis state (from tag-based analysis)
+    if (conversation.aiSummary) {
+      contextSections.push('\n--- CURRENT AI ANALYSIS ---');
+      contextSections.push(`Current Topic: ${conversation.lastTopic || 'Not set'}`);
+      contextSections.push(`Status: ${conversation.aiStatus || 'Unknown'}`);
+      contextSections.push(`Recommended Action: ${conversation.aiAction || 'None'}`);
+      contextSections.push(`Urgency: ${conversation.aiUrgencyLevel || 'Unknown'}`);
+      contextSections.push(`Summary: ${conversation.aiSummary}`);
+      if (conversation.aiSuggestedAction) {
+        contextSections.push(`Suggested Next Step: ${conversation.aiSuggestedAction}`);
+      }
+    }
+
+    // Existing AI summary if available (legacy)
+    if (conversation.summary && !conversation.aiSummary) {
       contextSections.push('\n--- AI SUMMARY ---');
       contextSections.push(`Summary: ${conversation.summary}`);
       if (conversation.sentiment) {
@@ -374,28 +359,145 @@ export async function POST(
       }
     }
 
-    // Message history
-    contextSections.push('\n--- RECENT MESSAGES ---');
-    contextSections.push(formattedMessages || 'No messages available');
+    // ============================================
+    // UNIFIED TIMELINE: Merge messages + notes chronologically
+    // ============================================
+    interface TimelineEntry {
+      type: 'message' | 'note';
+      timestamp: Date;
+      // Message fields
+      direction?: 'inbound' | 'outbound';
+      senderName?: string | null;
+      body?: string | null;
+      // Note fields
+      noteType?: string;
+      noteTitle?: string | null;
+      noteContent?: string;
+      noteFileName?: string | null;
+      noteFileUrl?: string | null;
+    }
+
+    // Convert messages to timeline entries
+    const messageEntries: TimelineEntry[] = messages
+      .filter(m => m.body && m.body.trim().length > 0)
+      .map(m => ({
+        type: 'message' as const,
+        timestamp: new Date(m.sentAt),
+        direction: m.direction === 'outbound' ? 'outbound' as const : 'inbound' as const,
+        senderName: m.direction === 'outbound'
+          ? 'You'
+          : (m.contact?.displayName ||
+             [m.contact?.firstName, m.contact?.lastName].filter(Boolean).join(' ') ||
+             'Contact'),
+        body: m.body,
+      }));
+
+    // Convert notes to timeline entries (use eventAt for when it happened)
+    const noteEntries: TimelineEntry[] = timelineNotes.map(n => ({
+      type: 'note' as const,
+      timestamp: n.eventAt ? new Date(n.eventAt) : new Date(n.createdAt),
+      noteType: n.type,
+      noteTitle: n.title,
+      noteContent: n.content,
+      noteFileName: n.fileName,
+      noteFileUrl: n.fileUrl,
+    }));
+
+    // Merge and sort chronologically (oldest first)
+    const timeline = [...messageEntries, ...noteEntries]
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+    // Track files to extract content from
+    const fileContentsToExtract: { storageKey: string; fileName: string }[] = [];
+
+    // Format unified timeline
+    const timelineLines: string[] = [];
+    for (const entry of timeline) {
+      const dateStr = entry.timestamp.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const timeStr = entry.timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+      if (entry.type === 'message') {
+        // Message: use → for outbound, ← for inbound
+        const arrow = entry.direction === 'outbound' ? '→' : '←';
+        timelineLines.push(`[${dateStr} ${timeStr}] ${arrow} ${entry.senderName}: ${entry.body}`);
+      } else {
+        // Note: use emoji based on type
+        const noteEmoji = entry.noteType === 'meeting' ? '📅'
+          : entry.noteType === 'call' ? '📞'
+          : entry.noteType === 'file' ? '📎'
+          : '📝';
+        const titlePart = entry.noteTitle ? ` "${entry.noteTitle}"` : '';
+        const filePart = entry.noteFileName ? ` [File: ${entry.noteFileName}]` : '';
+        timelineLines.push(`[${dateStr} ${timeStr}] ${noteEmoji} NOTE${titlePart}${filePart}: ${entry.noteContent}`);
+
+        // Collect files for content extraction
+        if (entry.noteFileUrl && entry.noteFileName) {
+          fileContentsToExtract.push({
+            storageKey: entry.noteFileUrl,
+            fileName: entry.noteFileName,
+          });
+        }
+      }
+    }
+
+    // Add unified timeline to context
+    contextSections.push('\n--- CONVERSATION TIMELINE (Messages + Notes) ---');
+    contextSections.push('Legend: → = You sent, ← = They sent, 📝/📅/📞/📎 = Internal notes');
+    contextSections.push(timelineLines.join('\n') || 'No messages or notes available');
+
+    // Extract file contents and add to context
+    if (fileContentsToExtract.length > 0) {
+      contextSections.push('\n--- ATTACHED FILE CONTENTS ---');
+      contextSections.push('(The following are the actual contents of files attached to notes)\n');
+
+      for (const file of fileContentsToExtract) {
+        const fileContent = await extractFileContent(file.storageKey);
+        if (fileContent) {
+          contextSections.push(fileContent);
+          contextSections.push(''); // Empty line between files
+        } else {
+          contextSections.push(`[${file.fileName}] (Binary or unsupported file format - content not available)`);
+        }
+      }
+    }
 
     // Build the system prompt
     const systemPrompt = `You are an intelligent CRM assistant helping a user understand and manage their conversation with a contact. You have access to:
-- Full conversation history (messages)
-- Timeline notes added by the user
+- UNIFIED TIMELINE: Messages and notes merged chronologically, showing the complete picture
 - Attached file contents (PDF text, documents, etc.)
-- Contact information and any existing AI analysis
+- Contact information and current AI analysis
+- Relationship tags (Customer, Partner, Prospect, Churned, etc.)
+
+UNDERSTANDING THE TIMELINE:
+The timeline shows messages and notes in chronological order:
+- → = Outbound message (you/team sent)
+- ← = Inbound message (contact sent)
+- 📝 = Internal note (context/observations)
+- 📅 = Meeting note (meeting summary)
+- 📞 = Call note (call summary)
+- 📎 = File attachment (document attached)
+
+Notes are internal context placed at their ACTUAL EVENT TIME (e.g., a meeting note backdated to when the meeting happened), not when the note was added. Use notes to understand offline discussions, meetings, and internal context.
 
 Your role is to:
-1. Answer questions about the conversation accurately
-2. Provide insights about the relationship and communication patterns
-3. Help prepare for follow-ups or calls
-4. Suggest appropriate responses when asked
-5. Identify action items or important details
+1. Answer questions using the COMPLETE timeline (messages + notes together)
+2. Understand that notes provide context for what happened between messages
+3. Provide insights tailored to the relationship stage (customer health, deal progress, partner value, etc.)
+4. Help prepare for follow-ups or calls with full context from both messages AND notes
+5. Suggest appropriate responses considering the complete relationship history
 6. Answer questions about attached files using the extracted content provided
+7. Reference the current AI analysis to provide consistent, up-to-date recommendations
+
+TAG-AWARE RESPONSES:
+- For CUSTOMERS: Focus on support, satisfaction, retention, and expansion opportunities
+- For PROSPECTS: Focus on deal stage, objections, closing strategies
+- For PARTNERS: Focus on referral potential, network value, relationship nurturing
+- For CHURNED: Focus on win-back opportunities and understanding departure reasons
+- For CUSTOMER GROUPS: Focus on group dynamics, key stakeholders, and active issues
 
 IMPORTANT: When the user asks about attached files, you DO have access to their contents - the text has been extracted and included in the context below. Reference the actual content, not just the filename.
 
-Be concise but thorough. When referencing specific messages, mention the sender and approximate time.
+Be concise but thorough. When referencing events, consider BOTH messages AND notes as part of the complete story.
 
 CONTEXT:
 ${contextSections.join('\n')}`;

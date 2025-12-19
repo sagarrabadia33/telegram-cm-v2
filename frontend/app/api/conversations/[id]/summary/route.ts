@@ -1,38 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/app/lib/prisma';
-import {
-  generateConversationSummary,
-  shouldExcludeFromSummary,
-  type Message,
-  type NotesContext,
-} from '@/app/lib/ai-summary';
+import { shouldExcludeFromSummary } from '@/app/lib/ai-summary';
 
+/**
+ * POST /api/conversations/[id]/summary
+ *
+ * Triggers tag-aware AI analysis for consistency with Contact Modal.
+ * Uses the analyze-conversations API internally to ensure same analysis everywhere.
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: conversationId } = await params;
-    const body = await request.json();
-    const { regenerate = false } = body;
 
-    // Get conversation details with notes and contact info
+    // Get conversation with AI-enabled tag
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
       select: {
         id: true,
-        externalChatId: true,
         title: true,
-        type: true,
-        summary: true,
-        summaryGeneratedAt: true,
-        metadata: true,
-        contact: {
+        tags: {
           select: {
-            firstName: true,
-            lastName: true,
-            displayName: true,
-            notes: true,
+            tag: {
+              select: {
+                id: true,
+                name: true,
+                aiEnabled: true,
+              },
+            },
           },
         },
       },
@@ -48,142 +45,101 @@ export async function POST(
     // Check if conversation should be excluded
     if (shouldExcludeFromSummary(conversation.title)) {
       return NextResponse.json(
-        {
-          error: `Conversation "${conversation.title}" is excluded from summary generation`,
-        },
+        { error: `Conversation "${conversation.title}" is excluded from analysis` },
         { status: 400 }
       );
     }
 
-    // If summary already exists and regenerate is false, return existing summary
-    if (conversation.summary && !regenerate) {
-      const existingSummary = await prisma.conversation.findUnique({
-        where: { id: conversationId },
-        select: {
-          summary: true,
-          sentiment: true,
-          intentLevel: true,
-          keyPoints: true,
-          lastTopic: true,
-          summaryGeneratedAt: true,
-        },
-      });
+    // Find AI-enabled tag for this conversation
+    const aiEnabledTag = conversation.tags.find(t => t.tag.aiEnabled);
 
-      return NextResponse.json({
-        success: true,
-        message: 'Summary already exists',
-        data: {
-          summary: existingSummary?.summary,
-          sentiment: existingSummary?.sentiment,
-          intentLevel: existingSummary?.intentLevel,
-          keyPoints: existingSummary?.keyPoints || [],
-          lastTopic: existingSummary?.lastTopic,
-          summaryGeneratedAt: existingSummary?.summaryGeneratedAt?.toISOString(),
-          fromCache: true,
-        },
-      });
-    }
-
-    // Get last 100 messages for this conversation
-    const messages = await prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { sentAt: 'desc' },
-      take: 100,
-      select: {
-        id: true,
-        body: true,
-        direction: true,
-        sentAt: true,
-        contact: {
-          select: {
-            firstName: true,
-            lastName: true,
-            displayName: true,
-          },
-        },
-      },
-    });
-
-    if (messages.length === 0) {
+    if (!aiEnabledTag) {
       return NextResponse.json(
-        { error: 'No messages found for this conversation' },
+        { error: 'No AI-enabled tag found for this conversation. Please add a tag (Partner, Customer, Prospect, etc.) first.' },
         { status: 400 }
       );
     }
 
-    // Format messages for AI analysis
-    const formattedMessages: Message[] = messages.map((m) => {
-      const senderName = m.contact
-        ? m.contact.displayName ||
-          [m.contact.firstName, m.contact.lastName].filter(Boolean).join(' ') ||
-          'Contact'
-        : 'Contact';
-
-      return {
-        content: m.body,
-        isOutgoing: m.direction === 'outbound',
-        sentAt: m.sentAt.toISOString(),
-        senderName,
-      };
-    });
-
-    // Build notes context for AI
-    const metadata = conversation.metadata as Record<string, unknown> | null;
-    const conversationNotes = metadata?.notes as string | null;
-    const contactNotes = conversation.contact?.notes || null;
-    const contactName = conversation.contact
-      ? conversation.contact.displayName ||
-        [conversation.contact.firstName, conversation.contact.lastName].filter(Boolean).join(' ') ||
-        null
-      : null;
-
-    const notesContext: NotesContext = {
-      conversationNotes,
-      contactNotes,
-      contactName,
-    };
-
-    // Generate summary using AI with notes context
-    const summaryData = await generateConversationSummary(
-      formattedMessages,
-      conversation.title || 'Unknown',
-      notesContext
-    );
-
-    // Store summary in database
-    const now = new Date();
+    // Clear last analyzed message ID to force re-analysis
     await prisma.conversation.update({
       where: { id: conversationId },
-      data: {
-        summary: summaryData.summary,
-        sentiment: summaryData.sentiment,
-        intentLevel: summaryData.intentLevel,
-        keyPoints: summaryData.keyPoints,
-        lastTopic: summaryData.lastTopic,
-        summaryGeneratedAt: now,
+      data: { aiLastAnalyzedMsgId: null },
+    });
+
+    // Call the analyze-conversations API internally for tag-aware analysis
+    const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL || 'http://localhost:3000';
+    const analyzeResponse = await fetch(`${baseUrl}/api/ai/analyze-conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tagId: aiEnabledTag.tag.id,
+        conversationIds: [conversationId],
+        forceRefresh: true,
+      }),
+    });
+
+    if (!analyzeResponse.ok) {
+      const errorData = await analyzeResponse.json();
+      throw new Error(errorData.error || 'Analysis failed');
+    }
+
+    // Fetch the updated conversation with all AI fields
+    const updatedConversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: {
+        // Intelligent analysis fields (tag-aware)
+        aiSummary: true,
+        aiStatus: true,
+        aiAction: true,
+        aiUrgencyLevel: true,
+        aiSuggestedAction: true,
+        aiStatusReason: true,
+        aiHealthScore: true,
+        aiChurnRisk: true,
+        aiSentiment: true,
+        aiAnalyzedTagName: true,
+        aiSummaryUpdatedAt: true,
+        // Legacy summary fields
+        summary: true,
+        sentiment: true,
+        intentLevel: true,
+        keyPoints: true,
+        lastTopic: true,
+        summaryGeneratedAt: true,
       },
     });
 
     return NextResponse.json({
       success: true,
-      message: regenerate
-        ? 'Summary regenerated successfully'
-        : 'Summary generated successfully',
+      message: 'Analysis regenerated successfully',
       data: {
-        summary: summaryData.summary,
-        sentiment: summaryData.sentiment,
-        intentLevel: summaryData.intentLevel,
-        keyPoints: summaryData.keyPoints,
-        lastTopic: summaryData.lastTopic,
-        summaryGeneratedAt: now.toISOString(),
+        // Intelligent analysis (primary)
+        aiSummary: updatedConversation?.aiSummary,
+        aiStatus: updatedConversation?.aiStatus,
+        aiAction: updatedConversation?.aiAction,
+        aiUrgencyLevel: updatedConversation?.aiUrgencyLevel,
+        aiSuggestedAction: updatedConversation?.aiSuggestedAction,
+        aiStatusReason: updatedConversation?.aiStatusReason,
+        aiHealthScore: updatedConversation?.aiHealthScore,
+        aiChurnRisk: updatedConversation?.aiChurnRisk,
+        aiSentiment: updatedConversation?.aiSentiment,
+        aiAnalyzedTagName: updatedConversation?.aiAnalyzedTagName,
+        aiSummaryUpdatedAt: updatedConversation?.aiSummaryUpdatedAt?.toISOString(),
+        // Legacy fields for backward compatibility
+        summary: updatedConversation?.aiSummary || updatedConversation?.summary,
+        sentiment: updatedConversation?.aiSentiment || updatedConversation?.sentiment,
+        intentLevel: updatedConversation?.intentLevel,
+        keyPoints: updatedConversation?.keyPoints || [],
+        lastTopic: updatedConversation?.lastTopic,
+        summaryGeneratedAt: updatedConversation?.aiSummaryUpdatedAt?.toISOString() || updatedConversation?.summaryGeneratedAt?.toISOString(),
         fromCache: false,
       },
     });
   } catch (error) {
-    console.error('Error generating summary:', error);
+    console.error('Error generating analysis:', error);
     return NextResponse.json(
       {
-        error: 'Failed to generate summary',
+        error: 'Failed to generate analysis',
         details: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
@@ -191,6 +147,12 @@ export async function POST(
   }
 }
 
+/**
+ * GET /api/conversations/[id]/summary
+ *
+ * Returns both intelligent analysis (tag-aware) and legacy summary fields.
+ * Prioritizes intelligent analysis fields when available.
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -198,16 +160,40 @@ export async function GET(
   try {
     const { id: conversationId } = await params;
 
-    // Get existing summary
+    // Get existing summary and intelligent analysis
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
       select: {
+        // Intelligent analysis fields (tag-aware) - PRIMARY
+        aiSummary: true,
+        aiStatus: true,
+        aiAction: true,
+        aiUrgencyLevel: true,
+        aiSuggestedAction: true,
+        aiStatusReason: true,
+        aiHealthScore: true,
+        aiChurnRisk: true,
+        aiSentiment: true,
+        aiAnalyzedTagName: true,
+        aiSummaryUpdatedAt: true,
+        // Legacy summary fields - FALLBACK
         summary: true,
         sentiment: true,
         intentLevel: true,
         keyPoints: true,
         lastTopic: true,
         summaryGeneratedAt: true,
+        // Tags for context
+        tags: {
+          select: {
+            tag: {
+              select: {
+                name: true,
+                aiEnabled: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -218,37 +204,59 @@ export async function GET(
       );
     }
 
-    if (!conversation.summary) {
+    // Check if we have any analysis (either intelligent or legacy)
+    const hasIntelligentAnalysis = conversation.aiSummary || conversation.aiStatus;
+    const hasLegacySummary = conversation.summary;
+
+    if (!hasIntelligentAnalysis && !hasLegacySummary) {
       // Return success with null data instead of 404 to prevent console errors
       return NextResponse.json({
         success: true,
         data: null,
-        message: 'No summary available for this conversation',
+        message: 'No analysis available for this conversation',
       });
     }
 
-    // Calculate new messages since summary was generated
+    // Calculate new messages since last analysis
+    const lastAnalyzedAt = conversation.aiSummaryUpdatedAt || conversation.summaryGeneratedAt;
     let newMessageCount = 0;
-    if (conversation.summaryGeneratedAt) {
+    if (lastAnalyzedAt) {
       newMessageCount = await prisma.message.count({
         where: {
           conversationId,
           sentAt: {
-            gt: conversation.summaryGeneratedAt,
+            gt: lastAnalyzedAt,
           },
         },
       });
     }
 
+    // Get AI-enabled tag info
+    const aiEnabledTag = conversation.tags.find(t => t.tag.aiEnabled);
+
     return NextResponse.json({
       success: true,
       data: {
-        summary: conversation.summary,
-        sentiment: conversation.sentiment,
+        // Intelligent analysis (primary) - shown in UI
+        aiSummary: conversation.aiSummary,
+        aiStatus: conversation.aiStatus,
+        aiAction: conversation.aiAction,
+        aiUrgencyLevel: conversation.aiUrgencyLevel,
+        aiSuggestedAction: conversation.aiSuggestedAction,
+        aiStatusReason: conversation.aiStatusReason,
+        aiHealthScore: conversation.aiHealthScore,
+        aiChurnRisk: conversation.aiChurnRisk,
+        aiSentiment: conversation.aiSentiment,
+        aiAnalyzedTagName: conversation.aiAnalyzedTagName || aiEnabledTag?.tag.name,
+        aiSummaryUpdatedAt: conversation.aiSummaryUpdatedAt?.toISOString(),
+        hasAITag: !!aiEnabledTag,
+        // Legacy fields for backward compatibility
+        summary: conversation.aiSummary || conversation.summary,
+        sentiment: conversation.aiSentiment || conversation.sentiment,
         intentLevel: conversation.intentLevel,
         keyPoints: conversation.keyPoints || [],
         lastTopic: conversation.lastTopic,
-        summaryGeneratedAt: conversation.summaryGeneratedAt?.toISOString(),
+        summaryGeneratedAt: conversation.aiSummaryUpdatedAt?.toISOString() || conversation.summaryGeneratedAt?.toISOString(),
         newMessagesSinceGenerated: newMessageCount,
       },
     });

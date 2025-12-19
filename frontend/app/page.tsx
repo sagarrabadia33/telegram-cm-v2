@@ -497,6 +497,17 @@ export default function Home() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Listen for refresh-contacts event from ContactModal (after AI refresh)
+  useEffect(() => {
+    const handleRefreshContacts = () => {
+      console.log('[Refresh] Contacts refresh triggered by AI analysis');
+      fetchContacts();
+    };
+
+    window.addEventListener('refresh-contacts', handleRefreshContacts);
+    return () => window.removeEventListener('refresh-contacts', handleRefreshContacts);
+  }, [fetchContacts]);
+
   // Handle search result selection - navigate to conversation and scroll to message
   const handleSearchSelectConversation = useCallback(
     (conversationId: string, messageId?: string) => {
@@ -871,6 +882,29 @@ export default function Home() {
     }
     // Track contact selected
     track('contact_selected', { contactId: contact.id, type: contact.type }, { contactId: contact.id });
+
+    // ON-DEMAND AI REFRESH: If analysis is stale, trigger immediate re-analysis
+    // Check if this contact has stale AI analysis (new messages since last analysis)
+    if (contact.aiSummaryUpdatedAt && contact.lastInteraction) {
+      const analysisTime = new Date(contact.aiSummaryUpdatedAt).getTime();
+      const lastMsgTime = new Date(contact.lastInteraction).getTime();
+      const hoursSinceAnalysis = (Date.now() - analysisTime) / (1000 * 60 * 60);
+
+      // If there are new messages AND analysis is 1+ hour old, trigger refresh
+      if (lastMsgTime > analysisTime && hoursSinceAnalysis >= 1) {
+        console.log(`[AI] On-demand refresh for ${contact.name} (${hoursSinceAnalysis.toFixed(1)}h stale)`);
+        fetch('/api/ai/auto-analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationIds: [contact.id],
+            forceReanalyze: true,
+          }),
+        }).catch(() => {
+          // Silent - don't disrupt UI
+        });
+      }
+    }
   };
 
   const handleCloseContactPanel = () => {

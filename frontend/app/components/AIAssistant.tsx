@@ -280,11 +280,31 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
     fetchNotesCount();
   }, [conversation?.id]);
 
-  // Scroll to bottom when new chat messages arrive
+  // Scroll to bottom when new chat messages arrive or when switching to AI tab
+  // Use multiple strategies to ensure reliable scrolling
   useEffect(() => {
-    if (chatContainerRef.current && activeTab === 'ai') {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
+    if (activeTab !== 'ai') return;
+
+    const scrollToBottom = () => {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+    };
+
+    // Strategy 1: Immediate scroll
+    scrollToBottom();
+
+    // Strategy 2: After React's paint (for tab switches)
+    requestAnimationFrame(() => {
+      scrollToBottom();
+      // Strategy 3: Double RAF for layout completion
+      requestAnimationFrame(scrollToBottom);
+    });
+
+    // Strategy 4: Fallback timeout for slower renders
+    const timeout = setTimeout(scrollToBottom, 50);
+
+    return () => clearTimeout(timeout);
   }, [chatMessages, activeTab]);
 
   // Keyboard shortcuts for tabs
@@ -486,22 +506,28 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
         </div>
       </div>
 
-      {/* Tab Content */}
-      {activeTab === 'ai' ? (
-        // AI Assistant Tab Content
-        <>
-          {/* Chat Messages */}
-          <div
-            ref={chatContainerRef}
-            style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: 'var(--space-4)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-3)',
-            }}
-          >
+      {/* Tab Content - Both tabs always rendered, inactive one hidden */}
+      {/* AI Assistant Tab Content */}
+      <div
+        style={{
+          display: activeTab === 'ai' ? 'flex' : 'none',
+          flexDirection: 'column',
+          flex: 1,
+          minHeight: 0, // Important for flex child overflow
+        }}
+      >
+        {/* Chat Messages */}
+        <div
+          ref={chatContainerRef}
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: 'var(--space-4)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}
+        >
             {chatMessages.length === 0 ? (
               <EmptyState
                 conversation={conversation}
@@ -729,21 +755,28 @@ export default function AIAssistant({ conversation }: AIAssistantProps) {
               </div>
             </div>
           </div>
-        </>
-      ) : (
-        // Notes Tab Content - Full height NotesTimeline
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {conversation && (
-            <NotesTimeline
-              conversationId={conversation.id}
-              isExpanded={true}
-              onToggleExpanded={() => {}}
-              onNotesCountChange={setNotesCount}
-              fullHeight={true}
-            />
-          )}
         </div>
-      )}
+
+      {/* Notes Tab Content - Always rendered, hidden when not active */}
+      <div
+        style={{
+          display: activeTab === 'notes' ? 'flex' : 'none',
+          flexDirection: 'column',
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+        }}
+      >
+        {conversation && (
+          <NotesTimeline
+            conversationId={conversation.id}
+            isExpanded={true}
+            onToggleExpanded={() => {}}
+            onNotesCountChange={setNotesCount}
+            fullHeight={true}
+          />
+        )}
+      </div>
     </div>
   );
 }

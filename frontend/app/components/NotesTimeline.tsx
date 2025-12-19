@@ -98,7 +98,8 @@ function NoteEntryItem({
   isLast: boolean;
 }) {
   const [isHovered, setIsHovered] = useState(false);
-  const date = new Date(note.createdAt);
+  // Use eventAt (when event happened) if available, otherwise fall back to createdAt
+  const date = new Date(note.eventAt || note.createdAt);
 
   // Check if content is just a placeholder
   const isContentPlaceholder = !note.content ||
@@ -849,6 +850,36 @@ function FullHeightEmptyState({ onAddNote }: { onAddNote: () => void }) {
   );
 }
 
+// Helper to format date for datetime-local input
+function formatDateForInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const mins = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${mins}`;
+}
+
+// Helper to format display date for the button
+function formatDisplayDate(date: Date): string {
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = date.toDateString() === yesterday.toDateString();
+
+  const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  if (isToday) {
+    return `Today at ${timeStr}`;
+  } else if (isYesterday) {
+    return `Yesterday at ${timeStr}`;
+  } else {
+    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `${dateStr} at ${timeStr}`;
+  }
+}
+
 // Note Modal - Linear style (minimal, adaptive, world-class UX)
 function NoteModal({
   isOpen,
@@ -870,9 +901,17 @@ function NoteModal({
   const [content, setContent] = useState(editingNote?.content || '');
   const [saving, setSaving] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // Event date - when did this happen? Defaults to now, allows backdating
+  const [eventAt, setEventAt] = useState<Date>(() => {
+    if (editingNote?.eventAt) return new Date(editingNote.eventAt);
+    return new Date();
+  });
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dateInputRef = useRef<HTMLInputElement>(null);
+  const datePickerRef = useRef<HTMLDivElement>(null);
 
   // Focus appropriate field on open
   useEffect(() => {
@@ -886,6 +925,20 @@ function NoteModal({
       }, 50);
     }
   }, [isOpen, type]);
+
+  // Close date picker when clicking outside
+  useEffect(() => {
+    if (!showDatePicker) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (datePickerRef.current && !datePickerRef.current.contains(e.target as Node)) {
+        setShowDatePicker(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showDatePicker]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -923,6 +976,7 @@ function NoteModal({
         type: selectedFile && !content.trim() && type === 'note' ? 'file' : type,
         title: title.trim() || undefined,
         content: content.trim() || (selectedFile ? `Attached: ${selectedFile.name}` : ''),
+        eventAt: eventAt.toISOString(),
         ...fileData,
       });
     } finally {
@@ -1182,34 +1236,134 @@ function NoteModal({
           justifyContent: 'space-between',
           alignItems: 'center',
         }}>
-          {/* Left: Attach button (icon only) */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '32px',
-              height: '32px',
-              color: 'var(--text-tertiary)',
-              background: 'transparent',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              transition: 'all 100ms ease',
-            }}
-            title="Attach file"
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = 'var(--border-default)';
-              e.currentTarget.style.color = 'var(--text-secondary)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = 'var(--border-subtle)';
-              e.currentTarget.style.color = 'var(--text-tertiary)';
-            }}
-          >
-            <AttachIcon style={{ width: '16px', height: '16px' }} />
-          </button>
+          {/* Left: Attach + Date picker */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '32px',
+                height: '32px',
+                color: 'var(--text-tertiary)',
+                background: 'transparent',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                transition: 'all 100ms ease',
+              }}
+              title="Attach file"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border-default)';
+                e.currentTarget.style.color = 'var(--text-secondary)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                e.currentTarget.style.color = 'var(--text-tertiary)';
+              }}
+            >
+              <AttachIcon style={{ width: '16px', height: '16px' }} />
+            </button>
+
+            {/* Date picker - click to toggle */}
+            <div ref={datePickerRef} style={{ position: 'relative' }}>
+              <button
+                onClick={() => setShowDatePicker(!showDatePicker)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 10px',
+                  fontSize: '12px',
+                  color: showDatePicker ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                  background: showDatePicker ? 'var(--bg-secondary)' : 'transparent',
+                  border: '1px solid',
+                  borderColor: showDatePicker ? 'var(--border-default)' : 'var(--border-subtle)',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  transition: 'all 100ms ease',
+                }}
+                title="When did this happen?"
+                onMouseEnter={(e) => {
+                  if (!showDatePicker) {
+                    e.currentTarget.style.borderColor = 'var(--border-default)';
+                    e.currentTarget.style.color = 'var(--text-secondary)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!showDatePicker) {
+                    e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                    e.currentTarget.style.color = 'var(--text-tertiary)';
+                  }
+                }}
+              >
+                <CalendarIcon style={{ width: '14px', height: '14px' }} />
+                <span>{formatDisplayDate(eventAt)}</span>
+              </button>
+
+              {/* Date picker dropdown */}
+              {showDatePicker && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: 0,
+                    marginBottom: '4px',
+                    background: 'var(--bg-primary)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                    zIndex: 10,
+                  }}
+                >
+                  <div style={{ marginBottom: '8px', fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: '500' }}>
+                    When did this happen?
+                  </div>
+                  <input
+                    ref={dateInputRef}
+                    type="datetime-local"
+                    value={formatDateForInput(eventAt)}
+                    max={formatDateForInput(new Date())}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setEventAt(new Date(e.target.value));
+                      }
+                    }}
+                    autoFocus
+                    style={{
+                      padding: '8px 10px',
+                      fontSize: '13px',
+                      color: 'var(--text-primary)',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: '6px',
+                      outline: 'none',
+                      cursor: 'pointer',
+                    }}
+                  />
+                  <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => setShowDatePicker(false)}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '12px',
+                        fontWeight: '500',
+                        color: 'var(--accent-primary)',
+                        background: 'transparent',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Right: Cancel + Save */}
           <div style={{ display: 'flex', gap: '8px' }}>
@@ -1356,6 +1510,16 @@ function AttachIcon({ style }: { style?: React.CSSProperties }) {
   return (
     <svg style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14 5.5l-6 6a2.5 2.5 0 01-3.54-3.54l6-6a1.5 1.5 0 112.12 2.12l-6 6a.5.5 0 01-.7-.7l5.5-5.5" />
+    </svg>
+  );
+}
+
+// Calendar icon
+function CalendarIcon({ style }: { style?: React.CSSProperties }) {
+  return (
+    <svg style={style} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="12" height="11" rx="2" />
+      <path d="M5 1v3M11 1v3M2 7h12" />
     </svg>
   );
 }

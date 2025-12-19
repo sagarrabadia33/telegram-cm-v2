@@ -195,6 +195,9 @@ export default function ContactModal({
   const [showToneMenu, setShowToneMenu] = useState(false);
   const [selectedTone, setSelectedTone] = useState<TonePreset>('casual');
 
+  // AI refresh state
+  const [isRefreshingAI, setIsRefreshingAI] = useState(false);
+
   // Tags state
   const [localAllTags, setLocalAllTags] = useState<Tag[]>([]);
 
@@ -559,6 +562,100 @@ export default function ContactModal({
       console.error('Failed to generate draft:', err);
     } finally {
       setIsGeneratingDraft(false);
+    }
+  };
+
+  // Refresh AI analysis - triggers re-analysis and waits for completion
+  const refreshAIAnalysis = async () => {
+    if (!contact?.id || isRefreshingAI) return;
+
+    try {
+      setIsRefreshingAI(true);
+      const response = await fetch('/api/ai/auto-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationIds: [contact.id],
+          forceReanalyze: true,
+        }),
+      });
+
+      if (response.ok) {
+        // Trigger page refresh to get updated data
+        // The parent component polls every 30s, but we want immediate update
+        window.dispatchEvent(new CustomEvent('refresh-contacts'));
+      }
+    } catch (err) {
+      console.error('Failed to refresh AI analysis:', err);
+    } finally {
+      setIsRefreshingAI(false);
+    }
+  };
+
+  // Format last updated time for tooltip - shows freshness state, not just time
+  // Returns JSX for proper styling with colored icons
+  const getLastUpdatedText = (): React.ReactNode => {
+    if (!contact?.aiSummaryUpdatedAt) {
+      return (
+        <span style={{ color: 'var(--text-tertiary)' }}>
+          Never analyzed
+        </span>
+      );
+    }
+
+    const updatedAt = new Date(contact.aiSummaryUpdatedAt);
+    const lastMessageAt = contact?.lastInteraction ? new Date(contact.lastInteraction) : null;
+
+    // Check if analysis is current
+    // Analysis is up-to-date if:
+    // 1. No last message exists, OR
+    // 2. Analysis was done after the last message (with 1 min buffer for processing delay)
+    const isUpToDate = !lastMessageAt || updatedAt >= new Date(lastMessageAt.getTime() - 60000);
+
+    // Format relative time
+    const now = new Date();
+    const diffMs = now.getTime() - updatedAt.getTime();
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    let relativeTime: string;
+    if (diffMins < 1) relativeTime = 'just now';
+    else if (diffMins < 60) relativeTime = `${diffMins}m ago`;
+    else if (diffHours < 24) relativeTime = `${diffHours}h ago`;
+    else relativeTime = `${diffDays}d ago`;
+
+    // Clear state-based message with visual hierarchy
+    if (isUpToDate) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span style={{ color: '#22C55E', fontWeight: 500 }}>Up to date</span>
+          </div>
+          <span style={{ color: 'var(--text-quaternary)', fontSize: '10px' }}>
+            Analyzed {relativeTime}
+          </span>
+        </div>
+      );
+    } else {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span style={{ color: '#F59E0B', fontWeight: 500 }}>New activity</span>
+          </div>
+          <span style={{ color: 'var(--text-quaternary)', fontSize: '10px' }}>
+            Analyzed {relativeTime}
+          </span>
+        </div>
+      );
     }
   };
 
@@ -949,8 +1046,97 @@ export default function ContactModal({
               {/* Spacer */}
               <div style={{ flex: 1 }} />
 
-              {/* Draft Reply - inline with action */}
+              {/* Action buttons - Draft and Refresh */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px', position: 'relative' }}>
+                {/* Refresh AI Analysis with tooltip */}
+                <div style={{ position: 'relative' }} className="refresh-btn-wrapper">
+                  <button
+                    onClick={refreshAIAnalysis}
+                    disabled={isRefreshingAI}
+                    className="refresh-ai-btn"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '5px 8px',
+                      background: 'var(--bg-tertiary)',
+                      color: isRefreshingAI ? 'var(--text-quaternary)' : 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: '5px',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      cursor: isRefreshingAI ? 'wait' : 'pointer',
+                      transition: 'all 100ms ease',
+                    }}
+                  >
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      style={{
+                        animation: isRefreshingAI ? 'spin 1s linear infinite' : 'none',
+                      }}
+                    >
+                      <path d="M21 12a9 9 0 1 1-9-9" />
+                      <polyline points="21 3 21 9 15 9" />
+                    </svg>
+                    {isRefreshingAI ? '...' : 'Refresh'}
+                  </button>
+                  {/* Linear-style tooltip */}
+                  <div
+                    className="refresh-tooltip"
+                    style={{
+                      position: 'absolute',
+                      bottom: '100%',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      marginBottom: '6px',
+                      padding: '8px 12px',
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-default)',
+                      borderRadius: '6px',
+                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                      fontSize: '11px',
+                      color: 'var(--text-secondary)',
+                      textAlign: 'center',
+                      opacity: 0,
+                      visibility: 'hidden',
+                      transition: 'opacity 150ms ease, visibility 150ms ease',
+                      pointerEvents: 'none',
+                      zIndex: 100,
+                      minWidth: '110px',
+                    }}
+                  >
+                    {getLastUpdatedText()}
+                    {/* Tooltip arrow */}
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: 0,
+                      height: 0,
+                      borderLeft: '5px solid transparent',
+                      borderRight: '5px solid transparent',
+                      borderTop: '5px solid var(--border-default)',
+                    }} />
+                  </div>
+                  <style>{`
+                    .refresh-btn-wrapper:hover .refresh-tooltip {
+                      opacity: 1 !important;
+                      visibility: visible !important;
+                    }
+                    .refresh-ai-btn:hover {
+                      background: var(--bg-hover) !important;
+                      border-color: var(--border-default) !important;
+                    }
+                  `}</style>
+                </div>
+
+                {/* Draft Reply */}
                 <button
                   onClick={() => generateDraft(selectedTone)}
                   disabled={isGeneratingDraft}
@@ -1563,7 +1749,7 @@ function AIContextIndicator({ contact }: { contact: Contact }) {
         </div>
       )}
 
-      {/* AI analysis indicator */}
+      {/* AI analysis indicator - simplified, refresh is in action box now */}
       {hasAiAnalysis && (
         <div style={{
           fontSize: '10px',
